@@ -13,6 +13,8 @@ import androidx.core.app.NotificationCompat
 import com.llamafarm.atmosphere.AtmosphereApplication
 import com.llamafarm.atmosphere.MainActivity
 import com.llamafarm.atmosphere.R
+import com.llamafarm.atmosphere.bindings.AtmosphereNode
+import com.llamafarm.atmosphere.bindings.AtmosphereException
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -70,6 +72,9 @@ class AtmosphereService : Service() {
     private val binder = LocalBinder()
     private var wakeLock: PowerManager.WakeLock? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    
+    // Native Atmosphere node
+    private var nativeNode: AtmosphereNode? = null
 
     // Observable state
     private val _state = MutableStateFlow(ServiceState.STOPPED)
@@ -165,27 +170,79 @@ class AtmosphereService : Service() {
     }
 
     private suspend fun initializeNode() {
-        // Simulate node initialization
-        // In real implementation, this calls into native code
-        delay(1000)
-        
-        // Generate a node ID (would come from native code)
-        _nodeId.value = "atm_" + (1..16).map { ('a'..'z').random() }.joinToString("")
-        
-        // Check if native library is available
-        if (AtmosphereApplication.isNativeLoaded()) {
-            Log.i(TAG, "Native library available - full node functionality")
-            // TODO: Call native initialization
-        } else {
-            Log.w(TAG, "Native library not available - running in mock mode")
+        try {
+            // Check if native library is available
+            if (AtmosphereApplication.isNativeLoaded()) {
+                Log.i(TAG, "Native library available - initializing real node")
+                
+                // Generate node ID from native code
+                val nodeId = AtmosphereNode.generateNodeId()
+                _nodeId.value = nodeId
+                
+                // Get data directory
+                val dataDir = applicationContext.filesDir.absolutePath + "/atmosphere"
+                java.io.File(dataDir).mkdirs()
+                
+                // Create native node
+                nativeNode = AtmosphereNode.create(nodeId, dataDir)
+                nativeNode?.start()
+                
+                Log.i(TAG, "Native node started: $nodeId")
+                
+                // Register default capabilities
+                registerDefaultCapabilities()
+            } else {
+                Log.w(TAG, "Native library not available - running in mock mode")
+                _nodeId.value = "mock_" + (1..16).map { ('a'..'z').random() }.joinToString("")
+            }
+        } catch (e: AtmosphereException) {
+            Log.e(TAG, "Failed to initialize native node", e)
+            throw e
+        } catch (e: UnsatisfiedLinkError) {
+            Log.e(TAG, "Native library load failed", e)
+            // Fall back to mock mode
+            _nodeId.value = "mock_" + (1..16).map { ('a'..'z').random() }.joinToString("")
+        }
+    }
+    
+    private fun registerDefaultCapabilities() {
+        try {
+            // Register camera capability
+            nativeNode?.registerCapability("""
+                {"name": "camera", "description": "Take photos with device camera"}
+            """.trimIndent())
+            
+            // Register location capability
+            nativeNode?.registerCapability("""
+                {"name": "location", "description": "Get device GPS location"}
+            """.trimIndent())
+            
+            // Register microphone capability
+            nativeNode?.registerCapability("""
+                {"name": "microphone", "description": "Record audio from device mic"}
+            """.trimIndent())
+            
+            Log.i(TAG, "Registered default capabilities")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register capabilities", e)
         }
     }
 
     private suspend fun shutdownNode() {
-        // Simulate graceful shutdown
-        delay(500)
-        _nodeId.value = null
-        _connectedPeers.value = 0
+        try {
+            nativeNode?.let { node ->
+                Log.i(TAG, "Stopping native node...")
+                node.stop()
+                node.destroy()
+                Log.i(TAG, "Native node stopped")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping native node", e)
+        } finally {
+            nativeNode = null
+            _nodeId.value = null
+            _connectedPeers.value = 0
+        }
     }
 
     private fun createNotification(status: String): Notification {
@@ -257,6 +314,29 @@ class AtmosphereService : Service() {
             connectedPeers = _connectedPeers.value,
             uptime = 0L // TODO: Track actual uptime
         )
+    }
+    
+    /**
+     * Get native node status as JSON.
+     */
+    fun getNativeStatus(): String? {
+        return try {
+            nativeNode?.statusJson()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get native status", e)
+            null
+        }
+    }
+    
+    /**
+     * Check if native node is running.
+     */
+    fun isNativeRunning(): Boolean {
+        return try {
+            nativeNode?.isRunning() ?: false
+        } catch (e: Exception) {
+            false
+        }
     }
 
     data class ServiceStats(

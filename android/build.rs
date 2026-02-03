@@ -1,9 +1,7 @@
-//! Build script for Atmosphere Android bindings
+//! Build script for Atmosphere Android JNI bindings
 //! 
-//! This generates the UniFFI scaffolding code from the UDL file.
+//! No special build steps needed for manual JNI bindings.
 
 fn main() {
-    // Generate the UniFFI scaffolding from the UDL file
-    uniffi::generate_scaffolding("src/atmosphere.udl")
-        .expect("Failed to generate UniFFI scaffolding");
+    // No-op - manual JNI bindings don't need code generation
 }
