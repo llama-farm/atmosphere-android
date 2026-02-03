@@ -1,0 +1,27 @@
+[package]
+name = "atmosphere-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Platform-agnostic core library for Atmosphere mesh network"
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+ed25519-dalek.workspace = true
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+rand.workspace = true
+futures-util = "0.3"
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+tokio-test = "0.4"

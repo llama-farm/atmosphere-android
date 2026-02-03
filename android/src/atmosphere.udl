@@ -1,0 +1,119 @@
+// Atmosphere Android - UniFFI Interface Definition
+// This file defines the Rust-to-Kotlin bindings for the Atmosphere mesh network.
+
+namespace atmosphere {
+    /// Create a new Atmosphere node with the given ID and data directory.
+    /// 
+    /// # Arguments
+    /// * `node_id` - Unique identifier for this node
+    /// * `data_dir` - Directory path for storing node data
+    /// 
+    /// # Returns
+    /// A new AtmosphereNode instance
+    /// 
+    /// # Errors
+    /// Returns AtmosphereError if configuration is invalid
+    [Throws=AtmosphereError]
+    AtmosphereNode create_node(string node_id, string data_dir);
+    
+    /// Generate a new random node ID (UUID v4)
+    string generate_node_id();
+};
+
+/// Error types that can occur in Atmosphere operations
+[Error]
+enum AtmosphereError {
+    /// Network-related error (connection failed, timeout, etc.)
+    "NetworkError",
+    /// Configuration error (invalid settings, missing required fields)
+    "ConfigError",
+    /// The requested capability was not found on any node
+    "CapabilityNotFound",
+    /// The node is not currently running
+    "NodeNotRunning",
+    /// Error serializing or deserializing JSON
+    "SerializationError",
+};
+
+/// An Atmosphere mesh network node.
+/// 
+/// This interface represents a node in the Atmosphere network that can
+/// register capabilities, connect to peers, and route intents.
+interface AtmosphereNode {
+    /// Start the node and connect to the mesh network.
+    /// 
+    /// # Errors
+    /// Returns AtmosphereError if the node fails to start
+    [Throws=AtmosphereError]
+    void start();
+    
+    /// Stop the node and disconnect from the network.
+    /// This is safe to call even if the node is not running.
+    void stop();
+    
+    /// Check if the node is currently running.
+    boolean is_running();
+    
+    /// Get the node's unique identifier.
+    string node_id();
+    
+    /// Get the node's data directory path.
+    string data_dir();
+    
+    /// Get the current node status as a JSON string.
+    /// 
+    /// The returned JSON has the following structure:
+    /// ```json
+    /// {
+    ///   "node_id": "...",
+    ///   "is_running": true,
+    ///   "capabilities_count": 5,
+    ///   "connected_peers": 3
+    /// }
+    /// ```
+    string status_json();
+    
+    /// Register a capability that this node provides.
+    /// 
+    /// # Arguments
+    /// * `capability_json` - JSON representation of the capability
+    /// 
+    /// The JSON should have the following structure:
+    /// ```json
+    /// {
+    ///   "id": "unique-capability-id",
+    ///   "name": "Human Readable Name",
+    ///   "description": "What this capability does",
+    ///   "version": "1.0.0",
+    ///   "metadata": {} // optional key-value pairs
+    /// }
+    /// ```
+    /// 
+    /// # Errors
+    /// Returns AtmosphereError::SerializationError if the JSON is invalid
+    [Throws=AtmosphereError]
+    void register_capability(string capability_json);
+    
+    /// Route an intent to a capable node in the mesh network.
+    /// 
+    /// # Arguments
+    /// * `intent_json` - JSON representation of the intent
+    /// 
+    /// The JSON should have the following structure:
+    /// ```json
+    /// {
+    ///   "id": "unique-intent-id",
+    ///   "capability": "target-capability-id",
+    ///   "action": "action-name",
+    ///   "params": {} // optional action parameters
+    /// }
+    /// ```
+    /// 
+    /// # Returns
+    /// JSON string with the intent result
+    /// 
+    /// # Errors
+    /// Returns AtmosphereError if routing fails
+    [Throws=AtmosphereError]
+    string route_intent(string intent_json);
+};

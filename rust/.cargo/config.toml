@@ -1,0 +1,33 @@
+# Cargo configuration for Android cross-compilation
+# This file is automatically used by cargo when building
+
+[target.aarch64-linux-android]
+# Linker will be set by build script based on NDK location
+# ar = "..."
+# linker = "..."
+
+[target.armv7-linux-androideabi]
+# Linker will be set by build script based on NDK location
+
+[target.x86_64-linux-android]
+# Linker will be set by build script based on NDK location
+
+[target.i686-linux-android]
+# Linker will be set by build script based on NDK location
+
+[build]
+# Target-specific settings
+
+[profile.release]
+opt-level = "z"        # Optimize for size
+lto = true             # Link-time optimization
+codegen-units = 1      # Better optimization
+panic = "abort"        # Smaller binary
+strip = true           # Strip symbols
+
+[profile.release.package."*"]
+opt-level = "z"
+
+[env]
+# Environment variables for Android builds
+# These can be overridden by the build script

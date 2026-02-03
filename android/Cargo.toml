@@ -1,0 +1,19 @@
+[package]
+name = "atmosphere-android"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Android JNI bindings for Atmosphere using UniFFI"
+
+[lib]
+crate-type = ["cdylib"]
+name = "atmosphere_android"
+
+[dependencies]
+atmosphere-core = { path = "../core" }
+uniffi.workspace = true
+thiserror.workspace = true
+
+[build-dependencies]
+uniffi = { workspace = true, features = ["build"] }

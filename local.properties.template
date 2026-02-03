@@ -1,0 +1,22 @@
+# This file should be copied to local.properties and customized for your environment
+# DO NOT commit local.properties to version control
+
+# Android SDK location
+# macOS typical path:
+sdk.dir=/Users/YOUR_USERNAME/Library/Android/sdk
+# Linux typical path:
+# sdk.dir=/home/YOUR_USERNAME/Android/Sdk
+# Windows typical path:
+# sdk.dir=C\:\\Users\\YOUR_USERNAME\\AppData\\Local\\Android\\Sdk
+
+# Android NDK location (optional - will use bundled NDK if not specified)
+# ndk.dir=/Users/YOUR_USERNAME/Library/Android/sdk/ndk/26.1.10909125
+
+# Rust toolchain (optional - uses system Rust if not specified)
+# rust.home=/Users/YOUR_USERNAME/.rustup/toolchains/stable-aarch64-apple-darwin
+
+# Release signing configuration (for production builds)
+# ATMOSPHERE_KEYSTORE_FILE=path/to/keystore.jks
+# ATMOSPHERE_KEYSTORE_PASSWORD=your_keystore_password
+# ATMOSPHERE_KEY_ALIAS=your_key_alias
+# ATMOSPHERE_KEY_PASSWORD=your_key_password

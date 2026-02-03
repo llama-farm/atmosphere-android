@@ -1,0 +1,32 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Android Studio
+.idea/
+*.iml
+local.properties
+*.jks
+*.keystore
+
+# APK files
+*.apk
+*.aab
+
+# Rust
+rust/target/
+rust/Cargo.lock
+
+# Native libraries (generated)
+app/src/main/jniLibs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Test outputs
+app/build/

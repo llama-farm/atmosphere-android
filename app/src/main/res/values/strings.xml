@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Atmosphere</string>
+    
+    <!-- Navigation -->
+    <string name="nav_home">Home</string>
+    <string name="nav_mesh">Mesh</string>
+    <string name="nav_capabilities">Capabilities</string>
+    <string name="nav_settings">Settings</string>
+    
+    <!-- Home Screen -->
+    <string name="node_status">Node Status</string>
+    <string name="service_control">Service Control</string>
+    <string name="start">Start</string>
+    <string name="stop">Stop</string>
+    <string name="peers">Peers</string>
+    
+    <!-- Status -->
+    <string name="status_online">Online</string>
+    <string name="status_offline">Offline</string>
+    <string name="status_connecting">Connecting</string>
+    <string name="status_error">Error</string>
+    
+    <!-- Notifications -->
+    <string name="notification_channel_service">Atmosphere Service</string>
+    <string name="notification_channel_mesh">Mesh Events</string>
+    <string name="notification_channel_inference">Inference</string>
+    <string name="notification_channel_inference_description">Shows when AI inference is running</string>
+    <string name="notification_service_running">Atmosphere is running</string>
+    <string name="inference_running">AI inference is running</string>
+    
+    <!-- Settings -->
+    <string name="settings_node_name">Node Name</string>
+    <string name="settings_node_id">Node ID</string>
+    <string name="settings_auto_start">Auto-start on boot</string>
+    <string name="settings_battery_optimization">Battery Optimization</string>
+    <string name="settings_permissions">App Permissions</string>
+    
+    <!-- Capabilities -->
+    <string name="capability_camera">Camera</string>
+    <string name="capability_microphone">Microphone</string>
+    <string name="capability_location">Location</string>
+    <string name="capability_storage">Storage</string>
+    <string name="capability_compute">Compute</string>
+    
+    <!-- Actions -->
+    <string name="action_scan">Scan</string>
+    <string name="action_refresh">Refresh</string>
+    <string name="action_save">Save</string>
+    <string name="action_cancel">Cancel</string>
+</resources>
