@@ -8,6 +8,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ChevronRight
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -18,17 +19,28 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.llamafarm.atmosphere.BuildConfig
+import com.llamafarm.atmosphere.data.AtmospherePreferences
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen() {
+fun SettingsScreen(
+    onNavigateToTransportSettings: (() -> Unit)? = null
+) {
     val context = LocalContext.current
-    var nodeName by remember { mutableStateOf("My Android Node") }
-    var autoStart by remember { mutableStateOf(false) }
-    var showNodeIdDialog by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val preferences = remember { AtmospherePreferences(context) }
     
-    // Placeholder node ID - would come from actual node initialization
-    val nodeId = remember { "atm_" + (1..16).map { ('a'..'z').random() }.joinToString("") }
+    // Collect persisted states
+    val nodeName by preferences.nodeName.collectAsState(initial = "My Android Node")
+    val nodeId by preferences.nodeId.collectAsState(initial = null)
+    val autoStart by preferences.autoStartOnBoot.collectAsState(initial = false)
+    val autoReconnect by preferences.autoReconnectMesh.collectAsState(initial = false)
+    val lastMeshName by preferences.lastMeshName.collectAsState(initial = null)
+    
+    var showNodeIdDialog by remember { mutableStateOf(false) }
+    var editingNodeName by remember { mutableStateOf(false) }
+    var tempNodeName by remember { mutableStateOf("") }
 
     LazyColumn(
         modifier = Modifier
@@ -56,18 +68,56 @@ fun SettingsScreen() {
 
         item {
             SettingsCard {
-                SettingsTextField(
-                    label = "Node Name",
-                    value = nodeName,
-                    onValueChange = { nodeName = it },
-                    icon = Icons.Default.Badge
-                )
+                if (editingNodeName) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Badge,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.width(16.dp))
+                        OutlinedTextField(
+                            value = tempNodeName,
+                            onValueChange = { tempNodeName = it },
+                            label = { Text("Node Name") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        IconButton(onClick = {
+                            scope.launch {
+                                preferences.setNodeName(tempNodeName)
+                            }
+                            editingNodeName = false
+                        }) {
+                            Icon(Icons.Default.Check, contentDescription = "Save")
+                        }
+                        IconButton(onClick = { editingNodeName = false }) {
+                            Icon(Icons.Default.Close, contentDescription = "Cancel")
+                        }
+                    }
+                } else {
+                    SettingsItem(
+                        title = "Node Name",
+                        subtitle = nodeName,
+                        icon = Icons.Default.Badge,
+                        onClick = {
+                            tempNodeName = nodeName
+                            editingNodeName = true
+                        }
+                    )
+                }
                 
                 HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                 
                 SettingsItem(
                     title = "Node ID",
-                    subtitle = nodeId.take(24) + "...",
+                    subtitle = nodeId?.take(24)?.let { "$it..." } ?: "Not generated",
                     icon = Icons.Default.Fingerprint,
                     onClick = { showNodeIdDialog = true }
                 )
@@ -91,7 +141,21 @@ fun SettingsScreen() {
                     subtitle = "Start Atmosphere service when device boots",
                     icon = Icons.Default.PowerSettingsNew,
                     checked = autoStart,
-                    onCheckedChange = { autoStart = it }
+                    onCheckedChange = { enabled ->
+                        scope.launch { preferences.setAutoStartOnBoot(enabled) }
+                    }
+                )
+                
+                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                
+                SettingsSwitch(
+                    title = "Auto-reconnect to mesh",
+                    subtitle = lastMeshName?.let { "Last: $it" } ?: "Reconnect to last mesh on startup",
+                    icon = Icons.Default.Hub,
+                    checked = autoReconnect,
+                    onCheckedChange = { enabled ->
+                        scope.launch { preferences.setAutoReconnectMesh(enabled) }
+                    }
                 )
                 
                 HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
@@ -106,6 +170,27 @@ fun SettingsScreen() {
                             context.startActivity(intent)
                         }
                     }
+                )
+            }
+        }
+
+        // Network Section
+        item {
+            Text(
+                text = "Network",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
+        }
+
+        item {
+            SettingsCard {
+                SettingsItem(
+                    title = "Transport Settings",
+                    subtitle = "Configure LAN, WiFi Direct, BLE, Matter, Relay",
+                    icon = Icons.Default.SettingsEthernet,
+                    onClick = { onNavigateToTransportSettings?.invoke() }
                 )
             }
         }
@@ -151,6 +236,41 @@ fun SettingsScreen() {
                 )
             }
         }
+        
+        // Data Section
+        item {
+            Text(
+                text = "Data",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
+        }
+
+        item {
+            SettingsCard {
+                SettingsItem(
+                    title = "Clear Mesh History",
+                    subtitle = "Remove saved mesh connection",
+                    icon = Icons.Default.DeleteSweep,
+                    onClick = {
+                        scope.launch { preferences.clearMeshConnection() }
+                    }
+                )
+                
+                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                
+                SettingsItem(
+                    title = "Reset All Settings",
+                    subtitle = "Clear all preferences and start fresh",
+                    icon = Icons.Default.RestartAlt,
+                    onClick = {
+                        scope.launch { preferences.clearAll() }
+                    },
+                    dangerous = true
+                )
+            }
+        }
 
         // About Section
         item {
@@ -178,7 +298,10 @@ fun SettingsScreen() {
                     subtitle = "github.com/llamafarm/atmosphere",
                     icon = Icons.Default.Code,
                     onClick = {
-                        // TODO: Open GitHub page
+                        val intent = Intent(Intent.ACTION_VIEW).apply {
+                            data = Uri.parse("https://github.com/llamafarm/atmosphere")
+                        }
+                        context.startActivity(intent)
                     }
                 )
             }
@@ -196,7 +319,7 @@ fun SettingsScreen() {
                     Spacer(Modifier.height(8.dp))
                     SelectionContainer {
                         Text(
-                            text = nodeId,
+                            text = nodeId ?: "Not generated yet",
                             style = MaterialTheme.typography.bodySmall,
                             fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
                         )
@@ -228,7 +351,8 @@ private fun SettingsItem(
     title: String,
     subtitle: String,
     icon: ImageVector,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    dangerous: Boolean = false
 ) {
     Row(
         modifier = Modifier
@@ -240,13 +364,14 @@ private fun SettingsItem(
         Icon(
             icon,
             contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
+            tint = if (dangerous) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
         )
         Spacer(Modifier.width(16.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.bodyLarge
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (dangerous) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
             )
             Text(
                 text = subtitle,
@@ -255,7 +380,7 @@ private fun SettingsItem(
             )
         }
         Icon(
-            Icons.Default.ChevronRight,
+            Icons.AutoMirrored.Filled.ChevronRight,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.outline
         )
@@ -297,35 +422,6 @@ private fun SettingsSwitch(
         Switch(
             checked = checked,
             onCheckedChange = onCheckedChange
-        )
-    }
-}
-
-@Composable
-private fun SettingsTextField(
-    label: String,
-    value: String,
-    onValueChange: (String) -> Unit,
-    icon: ImageVector
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(16.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            icon,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.width(16.dp))
-        OutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
-            label = { Text(label) },
-            singleLine = true,
-            modifier = Modifier.weight(1f)
         )
     }
 }
