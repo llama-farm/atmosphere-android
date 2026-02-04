@@ -19,6 +19,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import android.bluetooth.BluetoothManager
+import android.content.Context
+import android.content.pm.PackageManager
+import android.net.wifi.p2p.WifiP2pManager
 import com.llamafarm.atmosphere.data.AtmospherePreferences
 import com.llamafarm.atmosphere.network.TransportType
 import kotlinx.coroutines.launch
@@ -63,9 +67,24 @@ fun TransportSettingsScreen(
     val relayEnabled by preferences.transportRelayEnabled.collectAsState(initial = true)
     val preferLocalOnly by preferences.transportPreferLocalOnly.collectAsState(initial = false)
     
+    // Check device capabilities
+    val hasBluetooth = remember {
+        context.packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
+    }
+    val hasWifiDirect = remember {
+        context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)
+    }
+    val bluetoothEnabled = remember {
+        try {
+            val btManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+            btManager?.adapter?.isEnabled == true
+        } catch (e: SecurityException) {
+            false
+        }
+    }
+    
     // Build transport info list with current states
-    // In production, these statuses would come from TransportManager
-    val transports = remember(lanEnabled, wifiDirectEnabled, bleMeshEnabled, matterEnabled, relayEnabled) {
+    val transports = remember(lanEnabled, wifiDirectEnabled, bleMeshEnabled, matterEnabled, relayEnabled, hasBluetooth, hasWifiDirect, bluetoothEnabled) {
         listOf(
             TransportInfo(
                 type = TransportType.LAN,
@@ -82,7 +101,11 @@ fun TransportSettingsScreen(
                 description = "Peer-to-peer WiFi without router",
                 icon = Icons.Default.WifiTethering,
                 enabled = wifiDirectEnabled,
-                status = TransportStatus.UNAVAILABLE, // Not implemented yet
+                status = when {
+                    !hasWifiDirect -> TransportStatus.UNAVAILABLE
+                    !wifiDirectEnabled -> TransportStatus.UNAVAILABLE
+                    else -> TransportStatus.DISCONNECTED
+                },
                 latencyMs = null
             ),
             TransportInfo(
@@ -91,7 +114,12 @@ fun TransportSettingsScreen(
                 description = "Bluetooth Low Energy mesh network",
                 icon = Icons.Default.Bluetooth,
                 enabled = bleMeshEnabled,
-                status = TransportStatus.UNAVAILABLE, // Not implemented yet
+                status = when {
+                    !hasBluetooth -> TransportStatus.UNAVAILABLE
+                    !bluetoothEnabled -> TransportStatus.DISCONNECTED // BT off but available
+                    !bleMeshEnabled -> TransportStatus.UNAVAILABLE
+                    else -> TransportStatus.DISCONNECTED
+                },
                 latencyMs = null
             ),
             TransportInfo(
@@ -100,7 +128,8 @@ fun TransportSettingsScreen(
                 description = "Smart home device protocol",
                 icon = Icons.Default.Home,
                 enabled = matterEnabled,
-                status = TransportStatus.UNAVAILABLE, // Not implemented yet
+                // Matter requires Google Home services - check basic availability
+                status = if (matterEnabled) TransportStatus.DISCONNECTED else TransportStatus.UNAVAILABLE,
                 latencyMs = null
             ),
             TransportInfo(

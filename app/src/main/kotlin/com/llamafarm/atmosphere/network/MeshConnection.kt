@@ -126,10 +126,10 @@ class MeshConnection(
     val lastError: StateFlow<String?> = _lastError.asStateFlow()
     
     private val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .pingInterval(30, TimeUnit.SECONDS)
+        .connectTimeout(5, TimeUnit.SECONDS)  // Fast fail for fallback
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .pingInterval(25, TimeUnit.SECONDS)
         .build()
     
     /**
@@ -270,8 +270,8 @@ class MeshConnection(
             url = "ws://$url"
         }
         
-        // Add /api/ws if not present
-        if (!url.endsWith("/api/ws") && !url.endsWith("/ws")) {
+        // Add /api/ws if not present (but NOT for relay URLs which have /relay/ path)
+        if (!url.contains("/relay/") && !url.endsWith("/api/ws") && !url.endsWith("/ws")) {
             url = url.trimEnd('/') + "/api/ws"
         }
         
@@ -461,7 +461,44 @@ class MeshConnection(
     /**
      * Check if connected.
      */
-    fun isConnected(): Boolean = _connectionState.value == ConnectionState.CONNECTED
+    val isConnected: Boolean get() = _connectionState.value == ConnectionState.CONNECTED
+    val nodeId: String? get() = null  // TODO: Track assigned node ID
+    val meshId: String? get() = _meshName.value
+    val peerCount: Int get() = 0  // TODO: Track from mesh_status messages
+    val isRelayConnected: Boolean get() = endpoint.contains("relay")
+    
+    /**
+     * SDK-compatible join result.
+     */
+    data class JoinResult(
+        val success: Boolean,
+        val meshId: String? = null,
+        val nodeId: String? = null,
+        val error: String? = null
+    )
+    
+    /**
+     * SDK-compatible join method.
+     */
+    suspend fun join(meshId: String?, credentialsJson: String?): JoinResult {
+        return try {
+            // For now, we just check if already connected
+            if (isConnected) {
+                JoinResult(success = true, meshId = _meshName.value)
+            } else {
+                JoinResult(success = false, error = "Not connected. Call connect() first.")
+            }
+        } catch (e: Exception) {
+            JoinResult(success = false, error = e.message)
+        }
+    }
+    
+    /**
+     * SDK-compatible leave method.
+     */
+    fun leave() {
+        disconnect()
+    }
     
     companion object {
         /**
