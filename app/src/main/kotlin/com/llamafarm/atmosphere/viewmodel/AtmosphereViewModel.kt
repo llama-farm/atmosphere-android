@@ -11,11 +11,15 @@ import com.llamafarm.atmosphere.data.AtmospherePreferences
 import com.llamafarm.atmosphere.network.ConnectionState
 import com.llamafarm.atmosphere.network.MeshConnection
 import com.llamafarm.atmosphere.network.MeshMessage
+import com.llamafarm.atmosphere.network.RelayPeer
+import com.llamafarm.atmosphere.network.RoutingInfo
 import com.llamafarm.atmosphere.router.DefaultCapabilities
 import com.llamafarm.atmosphere.router.HttpEmbeddingService
 import com.llamafarm.atmosphere.router.RouteResult
 import com.llamafarm.atmosphere.router.SemanticRouter
 import com.llamafarm.atmosphere.service.AtmosphereService
+import com.llamafarm.atmosphere.transport.BleTransport
+import com.llamafarm.atmosphere.transport.NodeInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -57,9 +61,31 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
     private val _meshName = MutableStateFlow<String?>(null)
     val meshName: StateFlow<String?> = _meshName.asStateFlow()
     
-    // Peer list
+    // Peer list (from native node)
     private val _peers = MutableStateFlow<List<MeshPeer>>(emptyList())
     val peers: StateFlow<List<MeshPeer>> = _peers.asStateFlow()
+    
+    // Relay peer list (from WebSocket)
+    private val _relayPeers = MutableStateFlow<List<RelayPeer>>(emptyList())
+    val relayPeers: StateFlow<List<RelayPeer>> = _relayPeers.asStateFlow()
+    
+    // Combined peer count
+    val peerCount: Int
+        get() = _peers.value.size + _relayPeers.value.size
+    
+    // Relay connection state (for UI)
+    private val _relayConnectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
+    val relayConnectionState: StateFlow<ConnectionState> = _relayConnectionState.asStateFlow()
+    
+    // Cost tracking - THE CROWN JEWEL
+    private val _localCost = MutableStateFlow(1.0f)
+    val localCost: StateFlow<Float> = _localCost.asStateFlow()
+    
+    private val _peerCosts = MutableStateFlow<Map<String, Float>>(emptyMap())
+    val peerCosts: StateFlow<Map<String, Float>> = _peerCosts.asStateFlow()
+    
+    // Cost collector for local device metrics
+    private val costCollector = (application as? com.llamafarm.atmosphere.AtmosphereApplication)?.costCollector
     
     // Preferences
     private val preferences = AtmospherePreferences(application)
@@ -70,12 +96,55 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
     // WebSocket mesh connection (pure Kotlin, no Rust needed)
     private var meshWebSocket: MeshConnection? = null
     
+    // BLE Transport for local mesh (no internet required!)
+    private var bleTransport: BleTransport? = null
+    private val _blePeers = MutableStateFlow<List<NodeInfo>>(emptyList())
+    val blePeers: StateFlow<List<NodeInfo>> = _blePeers.asStateFlow()
+    
+    private val _bleEnabled = MutableStateFlow(false)
+    val bleEnabled: StateFlow<Boolean> = _bleEnabled.asStateFlow()
+    
     // Semantic router for intent-based routing
     val semanticRouter = SemanticRouter(application)
     
-    // Last route result
+    // Last route result (local semantic router)
     private val _lastRouteResult = MutableStateFlow<RouteResult?>(null)
     val lastRouteResult: StateFlow<RouteResult?> = _lastRouteResult.asStateFlow()
+    
+    // 🎯 LAST ROUTING INFO FROM SERVER (THE CROWN JEWEL!)
+    private val _lastRoutingInfo = MutableStateFlow<RoutingInfo?>(null)
+    val lastRoutingInfo: StateFlow<RoutingInfo?> = _lastRoutingInfo.asStateFlow()
+    
+    // Saved mesh info for UI display (MUST be before init block!)
+    private val _savedMeshName = MutableStateFlow<String?>(null)
+    val savedMeshName: StateFlow<String?> = _savedMeshName.asStateFlow()
+    
+    private val _hasSavedMesh = MutableStateFlow(false)
+    val hasSavedMesh: StateFlow<Boolean> = _hasSavedMesh.asStateFlow()
+    
+    // 📡 MESH EVENT LOG - Shows gossip, peer events, routing decisions
+    data class MeshEvent(
+        val timestamp: Long = System.currentTimeMillis(),
+        val type: String,  // "gossip", "peer_joined", "peer_left", "cost", "route", "chat", "error"
+        val title: String,
+        val detail: String? = null,
+        val nodeId: String? = null
+    )
+    
+    private val _meshEvents = MutableStateFlow<List<MeshEvent>>(emptyList())
+    val meshEvents: StateFlow<List<MeshEvent>> = _meshEvents.asStateFlow()
+    
+    private fun addMeshEvent(event: MeshEvent) {
+        val current = _meshEvents.value.toMutableList()
+        current.add(0, event)  // Add to front
+        // Keep last 50 events
+        if (current.size > 50) {
+            _meshEvents.value = current.take(50)
+        } else {
+            _meshEvents.value = current
+        }
+        Log.d(TAG, "📡 MESH EVENT: [${event.type}] ${event.title} - ${event.detail ?: ""}")
+    }
     
     // Mesh WebSocket connection state
     val meshConnectionState: StateFlow<ConnectionState>
@@ -86,9 +155,31 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
         get() = meshWebSocket?.meshName ?: MutableStateFlow(null)
 
     init {
-        loadSavedState()
+        // Auto-start everything on app launch
+        Log.i(TAG, "🚀 ViewModel initializing - auto-connect to mesh")
+        // NOTE: Don't call startService() - native library may not be available
+        // The mesh WebSocket connection works without the native node
+        loadSavedState()  // Will auto-reconnect to mesh if saved
         startPeerPolling()
         initializeRouter()
+        startCostCollection()
+    }
+    
+    /**
+     * Start collecting local device cost factors.
+     */
+    private fun startCostCollection() {
+        costCollector?.startCollecting(30_000L)  // Every 30 seconds
+        
+        viewModelScope.launch {
+            costCollector?.costFactors?.collect { factors ->
+                factors?.let {
+                    val cost = it.calculateCost()
+                    _localCost.value = cost
+                    Log.d(TAG, "Local cost updated: $cost (battery=${it.batteryLevel}%, charging=${it.isCharging}, network=${it.networkType})")
+                }
+            }
+        }
     }
     
     /**
@@ -153,29 +244,82 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
         nodeId: String,
         cost: Float = 1.0f
     ) {
-        semanticRouter.registerRemoteCapability(name, description, nodeId, null, cost)
+        semanticRouter.registerRemoteCapability(
+            name = name,
+            description = description,
+            nodeId = nodeId,
+            cost = cost
+        )
         Log.d(TAG, "Registered remote capability: $name from $nodeId")
     }
 
     private fun loadSavedState() {
         viewModelScope.launch {
+            Log.i(TAG, "=== loadSavedState() starting ===")
+            
             // Load persisted node ID
             preferences.nodeId.first()?.let { savedId ->
                 _nodeState.value = _nodeState.value.copy(nodeId = savedId)
+                Log.d(TAG, "Loaded node ID: $savedId")
             }
             
-            // Check for auto-reconnect to mesh
+            // Check if we have a saved mesh (for UI display)
+            val token = preferences.lastMeshToken.first()
+            val savedMeshName = preferences.lastMeshName.first()
+            val endpoint = preferences.lastMeshEndpoint.first()
             val autoReconnect = preferences.autoReconnectMesh.first()
-            if (autoReconnect) {
-                val endpoint = preferences.lastMeshEndpoint.first()
-                val token = preferences.lastMeshToken.first()
-                val savedMeshName = preferences.lastMeshName.first()
-                
-                if (endpoint != null && token != null) {
-                    Log.i(TAG, "Auto-reconnecting to mesh: $savedMeshName")
-                    joinMesh(endpoint, token)
-                }
+            
+            Log.i(TAG, "Saved mesh state: name=$savedMeshName, hasToken=${token != null}, hasEndpoint=${endpoint != null}, autoReconnect=$autoReconnect")
+            
+            _hasSavedMesh.value = token != null
+            _savedMeshName.value = savedMeshName
+            
+            // Check for auto-reconnect to mesh
+            if (autoReconnect && token != null && endpoint != null) {
+                Log.i(TAG, "🔄 Auto-reconnecting to mesh: $savedMeshName")
+                attemptReconnect()
+            } else {
+                Log.i(TAG, "Not auto-reconnecting: autoReconnect=$autoReconnect, token=${token != null}, endpoint=${endpoint != null}")
             }
+        }
+    }
+    
+    /**
+     * Attempt to reconnect to saved mesh using full endpoints map.
+     */
+    fun attemptReconnect() {
+        viewModelScope.launch {
+            val token = preferences.lastMeshToken.first() ?: return@launch
+            val endpoint = preferences.lastMeshEndpoint.first() ?: return@launch
+            val savedMeshName = preferences.lastMeshName.first()
+            val endpointsJson = preferences.lastMeshEndpointsJson.first()
+            
+            Log.i(TAG, "Attempting reconnect to: $savedMeshName")
+            
+            // Parse token string back to JSONObject for relay auth
+            val tokenObject = try {
+                JSONObject(token)
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not parse saved token as JSON, using as string")
+                null
+            }
+            
+            // Parse endpoints map if available
+            val endpoints: Map<String, String>? = try {
+                endpointsJson?.let { json ->
+                    val obj = JSONObject(json)
+                    mutableMapOf<String, String>().apply {
+                        obj.keys().forEach { key ->
+                            put(key, obj.getString(key))
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not parse saved endpoints JSON")
+                null
+            }
+            
+            joinMesh(endpoint, token, tokenObject, endpoints)
         }
     }
     
@@ -302,46 +446,146 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
      * 
      * This is the preferred method for connecting to a mesh from Android.
      * Uses OkHttp WebSocket to connect to the Atmosphere API.
+     * Tries multiple endpoints with fallback (local -> relay).
+     * 
+     * @param endpoint Primary WebSocket endpoint (used if endpoints map not available)
+     * @param token Legacy token string or JSON-encoded signed token
+     * @param tokenObject For v2 invites, the full signed token JSONObject
+     * @param endpoints Optional map of endpoints to try (local, public, relay)
      */
-    fun joinMesh(endpoint: String, token: String) {
+    fun joinMesh(
+        endpoint: String, 
+        token: String, 
+        tokenObject: JSONObject? = null,
+        endpoints: Map<String, String>? = null
+    ) {
         viewModelScope.launch {
             try {
-                Log.i(TAG, "Joining mesh via WebSocket at $endpoint")
+                // Build ordered list of endpoints to try
+                val endpointList = mutableListOf<Pair<String, String>>()
+                if (endpoints != null) {
+                    // Try local first (faster, lower latency), fall back to relay
+                    endpoints["local"]?.let { endpointList.add("local" to it) }
+                    endpoints["public"]?.let { endpointList.add("public" to it) }
+                    endpoints["relay"]?.let { endpointList.add("relay" to it) }
+                }
+                if (endpointList.isEmpty()) {
+                    endpointList.add("primary" to endpoint)
+                }
+                
+                Log.i(TAG, "Joining mesh, will try ${endpointList.size} endpoints: ${endpointList.map { it.first }}")
+                if (tokenObject != null) {
+                    Log.i(TAG, "Using signed token (v2)")
+                }
                 
                 // Disconnect existing connection if any
                 meshWebSocket?.disconnect()
                 
-                // Create new connection
-                meshWebSocket = MeshConnection(endpoint, token)
+                // Generate a node ID for this device
+                val nodeId = preferences.getOrCreateNodeId()
                 
-                meshWebSocket?.connect(
-                    onConnected = {
-                        Log.i(TAG, "WebSocket connected, waiting for join confirmation...")
-                    },
-                    onJoined = { meshName ->
-                        Log.i(TAG, "Successfully joined mesh: $meshName")
-                        viewModelScope.launch {
-                            _isConnectedToMesh.value = true
-                            _meshName.value = meshName
-                            _nodeState.value = _nodeState.value.copy(status = "Connected")
-                            
-                            // Save connection for auto-reconnect
-                            preferences.saveMeshConnection(endpoint, token, meshName)
-                        }
-                    },
-                    onError = { error ->
-                        Log.e(TAG, "WebSocket error: $error")
-                        viewModelScope.launch {
-                            _error.value = "Connection error: $error"
-                            _isConnectedToMesh.value = false
+                // Get capabilities to announce
+                val capabilities = semanticRouter.getCapabilities()
+                    .map { it.name }
+                    .toList()
+                    .take(10)
+                
+                // Try each endpoint until one works
+                var connected = false
+                var lastError: String? = null
+                
+                for ((name, ep) in endpointList) {
+                    if (connected) break
+                    
+                    Log.i(TAG, "Trying $name endpoint: $ep")
+                    _nodeState.value = _nodeState.value.copy(status = "Connecting ($name)...")
+                    
+                    meshWebSocket = MeshConnection(ep, token)
+                    
+                    // Use suspendCancellableCoroutine for timeout handling
+                    val result = kotlinx.coroutines.withTimeoutOrNull(8000L) {
+                        kotlinx.coroutines.suspendCancellableCoroutine<Boolean> { cont ->
+                            meshWebSocket?.connectWithAuth(
+                                nodeId = nodeId,
+                                meshToken = tokenObject,
+                                capabilities = capabilities,
+                                nodeName = android.os.Build.MODEL,
+                                onConnected = {
+                                    Log.i(TAG, "$name: WebSocket opened")
+                                },
+                                onJoined = { meshName ->
+                                    Log.i(TAG, "$name: Joined mesh $meshName")
+                                    viewModelScope.launch {
+                                        _isConnectedToMesh.value = true
+                                        _meshName.value = meshName
+                                        _savedMeshName.value = meshName
+                                        _hasSavedMesh.value = true
+                                        _nodeState.value = _nodeState.value.copy(status = "Connected via $name")
+                                        // Save full connection info including endpoints map
+                                        val endpointsJson = endpoints?.let { 
+                                            JSONObject(it).toString() 
+                                        }
+                                        preferences.saveMeshConnectionFull(ep, token, meshName, endpointsJson, null)
+                                        // Log connection event
+                                        addMeshEvent(MeshEvent(
+                                            type = "connected",
+                                            title = "🔗 Connected via $name",
+                                            detail = meshName ?: ep.take(30)
+                                        ))
+                                    }
+                                    if (cont.isActive) cont.resume(true, null)
+                                },
+                                onError = { error ->
+                                    Log.w(TAG, "$name: Connection error: $error")
+                                    lastError = error
+                                    if (cont.isActive) cont.resume(false, null)
+                                }
+                            )
                         }
                     }
-                )
+                    
+                    connected = result == true
+                    if (!connected) {
+                        Log.w(TAG, "$name endpoint failed, trying next...")
+                        meshWebSocket?.disconnect()
+                    }
+                }
                 
-                // Also listen for messages in background
+                if (!connected) {
+                    Log.e(TAG, "All endpoints failed. Last error: $lastError")
+                    _error.value = "Connection failed: ${lastError ?: "timeout"}"
+                    _isConnectedToMesh.value = false
+                    _relayConnectionState.value = ConnectionState.FAILED
+                    _nodeState.value = _nodeState.value.copy(status = "Disconnected")
+                } else {
+                    _relayConnectionState.value = ConnectionState.CONNECTED
+                }
+                
+                // Listen for messages in background
                 viewModelScope.launch {
                     meshWebSocket?.messages?.collect { message ->
                         handleMeshMessage(message)
+                    }
+                }
+                
+                // Subscribe to peer updates from the connection
+                viewModelScope.launch {
+                    meshWebSocket?.peers?.collect { peers ->
+                        _relayPeers.value = peers
+                        _nodeState.value = _nodeState.value.copy(
+                            connectedPeers = peers.size + _peers.value.size
+                        )
+                    }
+                }
+                
+                // Subscribe to connection state changes
+                viewModelScope.launch {
+                    meshWebSocket?.connectionState?.collect { state ->
+                        _relayConnectionState.value = state
+                        if (state == ConnectionState.DISCONNECTED || state == ConnectionState.FAILED) {
+                            _isConnectedToMesh.value = false
+                            _relayPeers.value = emptyList()
+                        }
                     }
                 }
                 
@@ -361,13 +605,133 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
             is MeshMessage.MeshStatus -> {
                 Log.d(TAG, "Mesh status: ${message.peerCount} peers, caps: ${message.capabilities}")
                 _nodeState.value = _nodeState.value.copy(connectedPeers = message.peerCount)
+                addMeshEvent(MeshEvent(
+                    type = "status",
+                    title = "Mesh Status",
+                    detail = "${message.peerCount} peers, ${message.capabilities.size} capabilities"
+                ))
             }
             is MeshMessage.CostUpdate -> {
                 Log.d(TAG, "Cost update from ${message.nodeId}: ${message.cost}")
+                // Store peer cost for routing decisions
+                _peerCosts.value = _peerCosts.value + (message.nodeId to message.cost)
+                addMeshEvent(MeshEvent(
+                    type = "cost",
+                    title = "Cost Update",
+                    detail = "cost=${String.format("%.2f", message.cost)}",
+                    nodeId = message.nodeId
+                ))
+            }
+            is MeshMessage.PeerList -> {
+                Log.i(TAG, "Received peer list: ${message.peers.size} peers")
+                _relayPeers.value = message.peers
+                _nodeState.value = _nodeState.value.copy(
+                    connectedPeers = message.peers.size + _peers.value.size
+                )
+                addMeshEvent(MeshEvent(
+                    type = "peers",
+                    title = "Peer List",
+                    detail = message.peers.joinToString(", ") { it.name }
+                ))
+                // Register remote capabilities from peers
+                message.peers.forEach { peer ->
+                    peer.capabilities.forEach { cap ->
+                        registerRemoteCapability(
+                            name = cap,
+                            description = "Remote capability from ${peer.name}",
+                            nodeId = peer.nodeId,
+                            cost = 1.5f // Slightly higher cost for remote
+                        )
+                    }
+                }
+            }
+            is MeshMessage.PeerJoined -> {
+                Log.i(TAG, "Peer joined: ${message.peer.name}")
+                val currentPeers = _relayPeers.value.toMutableList()
+                if (currentPeers.none { it.nodeId == message.peer.nodeId }) {
+                    currentPeers.add(message.peer)
+                    _relayPeers.value = currentPeers
+                    _nodeState.value = _nodeState.value.copy(
+                        connectedPeers = currentPeers.size + _peers.value.size
+                    )
+                }
+                addMeshEvent(MeshEvent(
+                    type = "peer_joined",
+                    title = "📥 Peer Joined",
+                    detail = "${message.peer.name} (${message.peer.capabilities.size} caps)",
+                    nodeId = message.peer.nodeId
+                ))
+                // Register remote capabilities
+                message.peer.capabilities.forEach { cap ->
+                    registerRemoteCapability(
+                        name = cap,
+                        description = "Remote capability from ${message.peer.name}",
+                        nodeId = message.peer.nodeId,
+                        cost = 1.5f
+                    )
+                }
+            }
+            is MeshMessage.PeerLeft -> {
+                Log.i(TAG, "Peer left: ${message.nodeId}")
+                val currentPeers = _relayPeers.value.filter { it.nodeId != message.nodeId }
+                _relayPeers.value = currentPeers
+                _nodeState.value = _nodeState.value.copy(
+                    connectedPeers = currentPeers.size + _peers.value.size
+                )
+                addMeshEvent(MeshEvent(
+                    type = "peer_left",
+                    title = "📤 Peer Left",
+                    nodeId = message.nodeId
+                ))
+            }
+            is MeshMessage.ChatResponse -> {
+                Log.d(TAG, "Chat response received: ${message.content.take(50)}...")
+                addMeshEvent(MeshEvent(
+                    type = "chat",
+                    title = "💬 Chat Response",
+                    detail = message.content.take(80) + if (message.content.length > 80) "..." else ""
+                ))
+                // Response handling done via callback in MeshConnection
+            }
+            is MeshMessage.LlmResponse -> {
+                Log.d(TAG, "LLM response received: ${message.response.take(50)}...")
+                // 🎯 CAPTURE ROUTING INFO (THE CROWN JEWEL!)
+                message.routing?.let { routing ->
+                    _lastRoutingInfo.value = routing
+                    addMeshEvent(MeshEvent(
+                        type = "route",
+                        title = "🎯 ${routing.complexity} → ${routing.modelSize}",
+                        detail = "${routing.taskType} | ${routing.backend ?: "unknown"} | conf=${String.format("%.0f%%", routing.confidence * 100)}"
+                    ))
+                }
+                addMeshEvent(MeshEvent(
+                    type = "chat",
+                    title = "💬 LLM Response",
+                    detail = message.response.take(80) + if (message.response.length > 80) "..." else ""
+                ))
             }
             is MeshMessage.Error -> {
                 Log.e(TAG, "Mesh error: ${message.message}")
                 _error.value = message.message
+                addMeshEvent(MeshEvent(
+                    type = "error",
+                    title = "❌ Error",
+                    detail = message.message
+                ))
+            }
+            is MeshMessage.Joined -> {
+                addMeshEvent(MeshEvent(
+                    type = "joined",
+                    title = "✅ Joined Mesh",
+                    detail = message.meshName
+                ))
+            }
+            is MeshMessage.Unknown -> {
+                addMeshEvent(MeshEvent(
+                    type = "unknown",
+                    title = "📨 ${message.type}",
+                    detail = message.raw.take(100)
+                ))
             }
             else -> {
                 // Other messages handled by specific callbacks
@@ -388,7 +752,7 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
         onResponse: (response: String?, error: String?) -> Unit
     ) {
         val connection = meshWebSocket
-        if (connection == null || !connection.isConnected()) {
+        if (connection == null || !connection.isConnected) {
             onResponse(null, "Not connected to mesh")
             return
         }
@@ -399,6 +763,52 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
                 onResponse(response, error)
             }
         }
+    }
+    
+    /**
+     * Send a chat message through the relay for LLM inference.
+     * Uses the chat_request format for proper mesh routing.
+     * 
+     * @param messages List of message maps with "role" and "content" keys
+     * @param model Optional model name ("auto" for automatic selection)
+     * @param onResponse Callback with (content, error)
+     */
+    fun sendChatMessage(
+        messages: List<Map<String, String>>,
+        model: String = "auto",
+        onResponse: (content: String?, error: String?) -> Unit
+    ) {
+        val connection = meshWebSocket
+        if (connection == null || !connection.isConnected) {
+            onResponse(null, "Not connected to mesh")
+            return
+        }
+        
+        connection.sendChatRequest(messages, model, "auto") { content, error ->
+            viewModelScope.launch(Dispatchers.Main) {
+                onResponse(content, error)
+            }
+        }
+    }
+    
+    /**
+     * Convenience method to send a simple user message.
+     * 
+     * @param content The user's message content
+     * @param systemPrompt Optional system prompt
+     * @param onResponse Callback with (content, error)
+     */
+    fun sendUserMessage(
+        content: String,
+        systemPrompt: String? = null,
+        onResponse: (content: String?, error: String?) -> Unit
+    ) {
+        val messages = mutableListOf<Map<String, String>>()
+        systemPrompt?.let {
+            messages.add(mapOf("role" to "system", "content" to it))
+        }
+        messages.add(mapOf("role" to "user", "content" to content))
+        sendChatMessage(messages, "auto", onResponse)
     }
     
     /**
@@ -449,10 +859,14 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
     
     /**
      * Disconnect from mesh.
+     * @param clearSaved If true, also clears saved mesh connection (prevents auto-reconnect)
      */
-    fun disconnectMesh() {
+    fun disconnectMesh(clearSaved: Boolean = true) {
         viewModelScope.launch {
             try {
+                // Stop BLE transport
+                stopBle()
+                
                 // Disconnect WebSocket connection
                 meshWebSocket?.disconnect()
                 meshWebSocket = null
@@ -463,17 +877,182 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
                 _isConnectedToMesh.value = false
                 _meshName.value = null
                 _peers.value = emptyList()
+                _relayPeers.value = emptyList()
+                _blePeers.value = emptyList()
+                _relayConnectionState.value = ConnectionState.DISCONNECTED
                 _nodeState.value = _nodeState.value.copy(
                     status = if (_nodeState.value.isRunning) "Online" else "Offline",
                     connectedPeers = 0
                 )
                 
-                // Clear saved connection
-                preferences.clearMeshConnection()
+                // Clear saved connection only if requested
+                if (clearSaved) {
+                    preferences.clearMeshConnection()
+                    _hasSavedMesh.value = false
+                    _savedMeshName.value = null
+                }
                 
-                Log.i(TAG, "Disconnected from mesh")
+                Log.i(TAG, "Disconnected from mesh (clearSaved=$clearSaved)")
             } catch (e: Exception) {
                 Log.e(TAG, "Error disconnecting from mesh", e)
+            }
+        }
+    }
+    
+    // ============================================================================
+    // BLE Transport - Local mesh without internet!
+    // ============================================================================
+    
+    /**
+     * Start BLE transport for local mesh discovery.
+     * Works even without internet - devices discover each other via Bluetooth.
+     */
+    fun startBle(meshId: String? = null) {
+        Log.i(TAG, "🔵 startBle() called, meshId=$meshId")
+        
+        if (bleTransport != null) {
+            Log.d(TAG, "BLE already running")
+            return
+        }
+        
+        try {
+            Log.i(TAG, "🔵 Creating BleTransport...")
+            val app = getApplication<Application>()
+            val nodeId = _nodeState.value.nodeId ?: "android-${System.currentTimeMillis()}"
+            
+            bleTransport = BleTransport(
+                context = app,
+                nodeName = "Atmosphere-Android",
+                capabilities = listOf("relay", "llm", "embeddings"),
+                meshId = meshId ?: _meshName.value
+            ).apply {
+                onPeerDiscovered = { info ->
+                    Log.i(TAG, "🔵 BLE peer discovered: ${info.name} (${info.nodeId})")
+                    addMeshEvent(MeshEvent(type = "ble_peer", title = "BLE Peer Discovered", detail = "${info.name} via Bluetooth"))
+                    viewModelScope.launch {
+                        _blePeers.value = _blePeers.value + info
+                    }
+                }
+                onPeerLost = { peerId ->
+                    Log.i(TAG, "🔴 BLE peer lost: $peerId")
+                    addMeshEvent(MeshEvent(type = "ble_peer", title = "BLE Peer Lost", detail = peerId))
+                    viewModelScope.launch {
+                        _blePeers.value = _blePeers.value.filter { it.nodeId != peerId }
+                    }
+                }
+                onMessage = { msg ->
+                    Log.d(TAG, "📨 BLE message from ${msg.sourceId}: ${msg.payload.size} bytes")
+                    // Handle BLE mesh messages (gossip, chat requests, etc.)
+                    handleBleMessage(msg)
+                }
+            }
+            
+            Log.i(TAG, "🔵 Calling bleTransport.start()...")
+            bleTransport?.start()
+            Log.i(TAG, "🔵 bleTransport.start() returned, setting _bleEnabled=true")
+            _bleEnabled.value = true
+            addMeshEvent(MeshEvent(type = "ble", title = "BLE Started", detail = "Scanning for local Atmosphere nodes"))
+            Log.i(TAG, "✅ BLE transport started successfully")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Failed to start BLE transport: ${e.message}", e)
+            addMeshEvent(MeshEvent(type = "error", title = "BLE Failed", detail = e.message ?: "Unknown error"))
+            _bleEnabled.value = false
+        }
+    }
+    
+    /**
+     * Stop BLE transport.
+     */
+    fun stopBle() {
+        bleTransport?.stop()
+        bleTransport = null
+        _bleEnabled.value = false
+        _blePeers.value = emptyList()
+        Log.i(TAG, "BLE transport stopped")
+    }
+    
+    /**
+     * Handle incoming BLE mesh message.
+     */
+    private fun handleBleMessage(msg: com.llamafarm.atmosphere.transport.BleMessage) {
+        try {
+            when (msg.header.msgType) {
+                com.llamafarm.atmosphere.transport.MessageType.HELLO -> {
+                    // Peer announcing itself
+                    val payload = String(msg.payload, Charsets.UTF_8)
+                    Log.d(TAG, "BLE HELLO from ${msg.sourceId}: $payload")
+                }
+                com.llamafarm.atmosphere.transport.MessageType.DATA -> {
+                    // Generic data message - could be chat, gossip, etc.
+                    val payload = String(msg.payload, Charsets.UTF_8)
+                    Log.d(TAG, "BLE DATA from ${msg.sourceId}: $payload")
+                }
+                else -> {
+                    Log.d(TAG, "BLE message type: ${msg.header.msgType}")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling BLE message", e)
+        }
+    }
+    
+    /**
+     * Get BLE peer count.
+     */
+    fun getBleePeerCount(): Int = _blePeers.value.size
+    
+    /**
+     * Forget saved mesh (clears saved connection without affecting current connection state).
+     */
+    fun forgetSavedMesh() {
+        viewModelScope.launch {
+            preferences.clearMeshConnection()
+            _hasSavedMesh.value = false
+            _savedMeshName.value = null
+            Log.i(TAG, "Forgot saved mesh connection")
+        }
+    }
+    
+    /**
+     * Called when app resumes from background/sleep.
+     * Checks mesh connection state and reconnects if needed.
+     */
+    fun onAppResume() {
+        viewModelScope.launch {
+            val wsConnected = meshWebSocket?.isConnected == true
+            val isConnected = _isConnectedToMesh.value
+            
+            Log.i(TAG, "📱 onAppResume: wsConnected=$wsConnected, isConnected=$isConnected")
+            
+            // Check if we should be connected but aren't
+            val autoReconnect = preferences.autoReconnectMesh.first()
+            val endpoint = preferences.lastMeshEndpoint.first()
+            val token = preferences.lastMeshToken.first()
+            
+            Log.d(TAG, "Resume check: autoReconnect=$autoReconnect, hasEndpoint=${endpoint != null}, hasToken=${token != null}")
+            
+            if (autoReconnect && endpoint != null && token != null) {
+                if (!wsConnected && !isConnected) {
+                    val savedMeshName = preferences.lastMeshName.first()
+                    Log.i(TAG, "🔄 Reconnecting to mesh on app resume: $savedMeshName")
+                    // Parse token string back to JSONObject for relay auth
+                    val tokenObject = try {
+                        JSONObject(token)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not parse saved token as JSON, using as string")
+                        null
+                    }
+                    joinMesh(endpoint, token, tokenObject)
+                } else if (wsConnected && !isConnected) {
+                    // WebSocket connected but state says not connected - fix state
+                    _isConnectedToMesh.value = true
+                    Log.i(TAG, "Fixed mesh connection state on resume")
+                } else {
+                    Log.d(TAG, "Already connected, no action needed")
+                }
+            } else {
+                Log.d(TAG, "No saved mesh to reconnect to")
             }
         }
     }
@@ -543,6 +1122,9 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
 
     override fun onCleared() {
         super.onCleared()
+        
+        // Clean up BLE transport
+        stopBle()
         
         // Clean up WebSocket connection
         meshWebSocket?.disconnect()

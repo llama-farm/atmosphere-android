@@ -646,30 +646,19 @@ class BleTransport(
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
             .build()
         
-        // Build service data with mesh_id prefix (8 bytes)
-        // Format: [mesh_id (8 bytes)][node_id (8 bytes)]
-        val serviceData = buildServiceData()
-        
-        val dataBuilder = AdvertiseData.Builder()
+        // MINIMAL advertising - just service UUID (fits easily in 31 bytes)
+        val data = AdvertiseData.Builder()
             .addServiceUuid(ParcelUuid(BleUuids.MESH_SERVICE_UUID))
             .setIncludeDeviceName(false)
             .setIncludeTxPowerLevel(false)
-        
-        // Add mesh_id in service data if available
-        if (serviceData.isNotEmpty()) {
-            dataBuilder.addServiceData(ParcelUuid(BleUuids.MESH_SERVICE_UUID), serviceData)
-        }
-        
-        val data = dataBuilder.build()
-        
-        // Optional scan response with manufacturer data
-        val scanResponse = AdvertiseData.Builder()
-            .addManufacturerData(BleUuids.ATMOSPHERE_MANUFACTURER_ID, buildManufacturerData())
             .build()
         
+        // NO scan response - keep it simple for now
+        // Other devices can read our INFO characteristic after connecting
+        
         try {
-            advertiser?.startAdvertising(settings, data, scanResponse, advertiseCallback)
-            Log.i(TAG, "Started advertising mesh=${meshId ?: "any"}")
+            advertiser?.startAdvertising(settings, data, advertiseCallback)
+            Log.i(TAG, "✅ Advertising started (service UUID only)")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start advertising: ${e.message}")
         }
