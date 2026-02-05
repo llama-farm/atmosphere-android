@@ -15,6 +15,17 @@ import com.llamafarm.atmosphere.MainActivity
 import com.llamafarm.atmosphere.R
 import com.llamafarm.atmosphere.bindings.AtmosphereNode
 import com.llamafarm.atmosphere.bindings.AtmosphereException
+import com.llamafarm.atmosphere.capabilities.CameraCapability
+import com.llamafarm.atmosphere.capabilities.VoiceCapability
+import com.llamafarm.atmosphere.capabilities.MeshCapabilityHandler
+import com.llamafarm.atmosphere.cost.CostBroadcaster
+import com.llamafarm.atmosphere.cost.CostCollector
+import com.llamafarm.atmosphere.cost.CostFactors
+import com.llamafarm.atmosphere.data.AtmospherePreferences
+import com.llamafarm.atmosphere.data.SavedMeshRepository
+import com.llamafarm.atmosphere.network.ConnectionTrain
+import com.llamafarm.atmosphere.network.MeshConnection
+import com.llamafarm.atmosphere.network.TransportEvent
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -75,6 +86,25 @@ class AtmosphereService : Service() {
     
     // Native Atmosphere node
     private var nativeNode: AtmosphereNode? = null
+    
+    // Cost monitoring
+    private var costCollector: CostCollector? = null
+    private var costBroadcaster: CostBroadcaster? = null
+    
+    // Capabilities
+    private var cameraCapability: CameraCapability? = null
+    private var voiceCapability: VoiceCapability? = null
+    private var meshCapabilityHandler: MeshCapabilityHandler? = null
+    
+    // Mesh connection (for cost broadcasting)
+    private var meshConnection: MeshConnection? = null
+    
+    // Connection Train for resilient mesh connectivity
+    private var connectionTrain: ConnectionTrain? = null
+    
+    // Persistence
+    private lateinit var preferences: AtmospherePreferences
+    private lateinit var meshRepository: SavedMeshRepository
 
     // Observable state
     private val _state = MutableStateFlow(ServiceState.STOPPED)
@@ -82,17 +112,39 @@ class AtmosphereService : Service() {
 
     private val _connectedPeers = MutableStateFlow(0)
     val connectedPeers: StateFlow<Int> = _connectedPeers.asStateFlow()
+    
+    // Mesh connection state exposed to clients
+    private val _meshConnectionState = MutableStateFlow(com.llamafarm.atmosphere.network.ConnectionState.DISCONNECTED)
+    val meshConnectionState: StateFlow<com.llamafarm.atmosphere.network.ConnectionState> = _meshConnectionState.asStateFlow()
+    
+    private val _activeTransport = MutableStateFlow<String?>(null)
+    val activeTransport: StateFlow<String?> = _activeTransport.asStateFlow()
 
     private val _nodeId = MutableStateFlow<String?>(null)
     val nodeId: StateFlow<String?> = _nodeId.asStateFlow()
+    
+    private val _currentCost = MutableStateFlow<Float?>(null)
+    val currentCost: StateFlow<Float?> = _currentCost.asStateFlow()
+    
+    private val _costFactors = MutableStateFlow<CostFactors?>(null)
+    val costFactors: StateFlow<CostFactors?> = _costFactors.asStateFlow()
 
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "Service created")
+        
+        // Initialize persistence
+        preferences = AtmospherePreferences(this)
+        meshRepository = SavedMeshRepository(preferences)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
+            "com.llamafarm.atmosphere.action.CONNECT_MESH" -> {
+                val meshId = intent.getStringExtra("meshId")
+                if (meshId != null) connectToMesh(meshId)
+            }
+            "com.llamafarm.atmosphere.action.DISCONNECT_MESH" -> disconnectMesh()
             ACTION_START -> startNode()
             ACTION_STOP -> stopNode()
             else -> Log.w(TAG, "Unknown action: ${intent?.action}")
@@ -129,19 +181,124 @@ class AtmosphereService : Service() {
         // Initialize node in background
         serviceScope.launch {
             try {
-                // TODO: Initialize native node
-                // This is where we'd call into the Rust library
+                // Initialize native node
                 initializeNode()
 
                 _state.value = ServiceState.RUNNING
                 updateNotification("Connected • 0 peers")
                 Log.i(TAG, "Node started successfully")
+                
+                // Auto-connect to saved mesh if configured
+                checkAutoConnect()
+                
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start node", e)
                 _state.value = ServiceState.STOPPED
                 stopSelf()
             }
         }
+    }
+    
+    private suspend fun checkAutoConnect() {
+        // Load saved meshes with auto-reconnect
+        val autoConnectMeshes = meshRepository.getAutoReconnectMeshes()
+        if (autoConnectMeshes.isNotEmpty()) {
+            val mesh = autoConnectMeshes.first() // Connect to first available for now
+            Log.i(TAG, "Auto-connecting to mesh: ${mesh.meshName}")
+            connectToMesh(mesh)
+        }
+    }
+    
+    /**
+     * Connect to a specific mesh using ConnectionTrain.
+     */
+    fun connectToMesh(meshId: String) {
+        serviceScope.launch {
+            val mesh = meshRepository.getMesh(meshId)
+            if (mesh != null) {
+                connectToMesh(mesh)
+            } else {
+                Log.e(TAG, "Cannot connect: Mesh $meshId not found")
+            }
+        }
+    }
+    
+    private fun connectToMesh(mesh: com.llamafarm.atmosphere.data.SavedMesh) {
+        Log.i(TAG, "Starting ConnectionTrain for ${mesh.meshName}")
+        
+        // Clean up existing train
+        connectionTrain?.destroy()
+        
+        val nodeId = _nodeId.value ?: "unknown"
+        val capabilities = listOf("camera", "microphone", "location") // From registry
+        
+        // Create and start new train
+        connectionTrain = ConnectionTrain(
+            context = applicationContext,
+            savedMesh = mesh,
+            nodeId = nodeId,
+            capabilities = capabilities,
+            nodeName = android.os.Build.MODEL
+        ).apply {
+            // Observe events
+            serviceScope.launch {
+                events.collect { event: TransportEvent ->
+                    handleTransportEvent(event, mesh)
+                }
+            }
+            
+            // Observe active transport
+            serviceScope.launch {
+                activeTransport.collect { type ->
+                    _activeTransport.value = type
+                    if (type != null) {
+                        updateNotification("Connected via $type")
+                    } else {
+                        updateNotification("Disconnected")
+                    }
+                }
+            }
+            
+            connect()
+        }
+    }
+    
+    private suspend fun handleTransportEvent(event: TransportEvent, mesh: com.llamafarm.atmosphere.data.SavedMesh) {
+        when (event) {
+            is TransportEvent.ConnectionEstablished -> {
+                Log.i(TAG, "✅ Connected to ${mesh.meshName} via ${event.type}")
+                _meshConnectionState.value = com.llamafarm.atmosphere.network.ConnectionState.CONNECTED
+                
+                // Set mesh connection for cost broadcasting
+                connectionTrain?.getActiveConnection()?.let { conn ->
+                    setMeshConnection(conn)
+                }
+                
+                // Update last connected time
+                meshRepository.updateMeshConnection(mesh.meshId, event.type, true)
+            }
+            is TransportEvent.ConnectionLost -> {
+                Log.w(TAG, "❌ Connection lost: ${event.error}")
+                _meshConnectionState.value = com.llamafarm.atmosphere.network.ConnectionState.DISCONNECTED
+                clearMeshConnection()
+            }
+            is TransportEvent.AllFailed -> {
+                Log.e(TAG, "❌ All transports failed")
+                _meshConnectionState.value = com.llamafarm.atmosphere.network.ConnectionState.FAILED
+            }
+            else -> {}
+        }
+    }
+    
+    /**
+     * Disconnect from current mesh.
+     */
+    fun disconnectMesh() {
+        connectionTrain?.destroy()
+        connectionTrain = null
+        clearMeshConnection()
+        _meshConnectionState.value = com.llamafarm.atmosphere.network.ConnectionState.DISCONNECTED
+        updateNotification("Online (Disconnected)")
     }
 
     private fun stopNode() {
@@ -171,19 +328,21 @@ class AtmosphereService : Service() {
 
     private suspend fun initializeNode() {
         try {
+            // Initialize identity
+            val app = applicationContext as AtmosphereApplication
+            val identity = app.identityManager
+            val nodeId = identity.nodeId ?: identity.loadOrCreateIdentity()
+            _nodeId.value = nodeId
+
             // Check if native library is available
             if (AtmosphereApplication.isNativeLoaded()) {
                 Log.i(TAG, "Native library available - initializing real node")
-                
-                // Generate node ID from native code
-                val nodeId = AtmosphereNode.generateNodeId()
-                _nodeId.value = nodeId
                 
                 // Get data directory
                 val dataDir = applicationContext.filesDir.absolutePath + "/atmosphere"
                 java.io.File(dataDir).mkdirs()
                 
-                // Create native node
+                // Create native node using generated identity
                 nativeNode = AtmosphereNode.create(nodeId, dataDir)
                 nativeNode?.start()
                 
@@ -191,18 +350,54 @@ class AtmosphereService : Service() {
                 
                 // Register default capabilities
                 registerDefaultCapabilities()
+                
+                // Initialize capabilities and cost monitoring
+                initializeCapabilities(nodeId)
             } else {
                 Log.w(TAG, "Native library not available - running in mock mode")
-                _nodeId.value = "mock_" + (1..16).map { ('a'..'z').random() }.joinToString("")
+                
+                // Still initialize capabilities in mock mode
+                initializeCapabilities(nodeId)
             }
-        } catch (e: AtmosphereException) {
-            Log.e(TAG, "Failed to initialize native node", e)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize node", e)
             throw e
-        } catch (e: UnsatisfiedLinkError) {
-            Log.e(TAG, "Native library load failed", e)
-            // Fall back to mock mode
-            _nodeId.value = "mock_" + (1..16).map { ('a'..'z').random() }.joinToString("")
         }
+    }
+    
+    private fun initializeCapabilities(nodeId: String) {
+        Log.i(TAG, "Initializing capabilities and cost monitoring")
+        
+        // Initialize cost collector and start collecting
+        costCollector = CostCollector(applicationContext).apply {
+            startCollecting(intervalMs = 10_000L)  // Collect every 10s
+        }
+        
+        // Initialize cost broadcaster (will start when mesh connection is set)
+        costBroadcaster = CostBroadcaster(applicationContext, nodeId)
+        
+        // Initialize camera capability
+        cameraCapability = CameraCapability(applicationContext)
+        
+        // Initialize voice capability
+        voiceCapability = VoiceCapability(applicationContext)
+        
+        // Initialize mesh capability handler (exposes capabilities to mesh)
+        meshCapabilityHandler = MeshCapabilityHandler(applicationContext, nodeId)
+        Log.i(TAG, "Mesh capability handler initialized with capabilities: ${meshCapabilityHandler?.getCapabilityNames()}")
+        
+        // Observe cost factors
+        serviceScope.launch {
+            costCollector?.costFactors?.collect { factors ->
+                factors?.let {
+                    _costFactors.value = it
+                    _currentCost.value = it.calculateCost()
+                }
+            }
+        }
+        
+        Log.i(TAG, "Capabilities initialized: camera=${cameraCapability?.isAvailable?.value}, " +
+                   "stt=${voiceCapability?.sttAvailable?.value}, tts=${voiceCapability?.ttsAvailable?.value}")
     }
     
     private fun registerDefaultCapabilities() {
@@ -230,6 +425,30 @@ class AtmosphereService : Service() {
 
     private suspend fun shutdownNode() {
         try {
+            // Stop cost broadcasting
+            costBroadcaster?.destroy()
+            costBroadcaster = null
+            
+            // Stop cost collection
+            costCollector?.destroy()
+            costCollector = null
+            
+            // Destroy capabilities
+            cameraCapability?.destroy()
+            cameraCapability = null
+            
+            voiceCapability?.destroy()
+            voiceCapability = null
+            
+            // Destroy mesh capability handler
+            meshCapabilityHandler?.destroy()
+            meshCapabilityHandler = null
+            
+            // Disconnect mesh
+            meshConnection?.disconnect()
+            meshConnection = null
+            
+            // Stop native node
             nativeNode?.let { node ->
                 Log.i(TAG, "Stopping native node...")
                 node.stop()
@@ -242,6 +461,8 @@ class AtmosphereService : Service() {
             nativeNode = null
             _nodeId.value = null
             _connectedPeers.value = 0
+            _currentCost.value = null
+            _costFactors.value = null
         }
     }
 
@@ -337,6 +558,64 @@ class AtmosphereService : Service() {
         } catch (e: Exception) {
             false
         }
+    }
+    
+    /**
+     * Set the mesh connection for cost broadcasting.
+     * Call this when joining a mesh.
+     */
+    fun setMeshConnection(connection: MeshConnection) {
+        meshConnection = connection
+        
+        // Start cost broadcasting
+        _nodeId.value?.let { nodeId ->
+            costBroadcaster?.start(connection, intervalMs = 30_000L)
+            Log.i(TAG, "Started cost broadcasting for $nodeId")
+        }
+        
+        // Register capabilities with mesh
+        meshCapabilityHandler?.setMeshConnection(connection)
+    }
+    
+    /**
+     * Stop mesh connection and cost broadcasting.
+     */
+    fun clearMeshConnection() {
+        costBroadcaster?.stop()
+        meshCapabilityHandler?.clearMeshConnection()
+        meshConnection = null
+    }
+    
+    /**
+     * Get the camera capability instance.
+     */
+    fun getCameraCapability(): CameraCapability? = cameraCapability
+    
+    /**
+     * Get the voice capability instance.
+     */
+    fun getVoiceCapability(): VoiceCapability? = voiceCapability
+    
+    /**
+     * Get the cost collector instance.
+     */
+    fun getCostCollector(): CostCollector? = costCollector
+    
+    /**
+     * Get the cost broadcaster instance.
+     */
+    fun getCostBroadcaster(): CostBroadcaster? = costBroadcaster
+    
+    /**
+     * Get the mesh capability handler instance.
+     */
+    fun getMeshCapabilityHandler(): MeshCapabilityHandler? = meshCapabilityHandler
+    
+    /**
+     * Force an immediate cost broadcast.
+     */
+    fun broadcastCostNow() {
+        costBroadcaster?.broadcastNow()
     }
 
     data class ServiceStats(
