@@ -3,6 +3,7 @@ package com.llamafarm.atmosphere.ui.screens
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
+import android.util.Log
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -157,16 +158,12 @@ fun HomeScreen(viewModel: AtmosphereViewModel) {
             Spacer(modifier = Modifier.height(16.dp))
         }
 
-        // Quick Stats Row - Use remember with proper keys to ensure recomposition
-        val peerCount = remember(relayPeers.size, nodeState.connectedPeers) {
-            relayPeers.size.coerceAtLeast(nodeState.connectedPeers).also {
-                android.util.Log.d("HomeScreen", "📊 peerCount computed: $it (relayPeers=${relayPeers.size}, nodeState=${nodeState.connectedPeers})")
-            }
+        // Quick Stats Row - Compute directly in composition to ensure recomposition
+        val peerCount = relayPeers.size.coerceAtLeast(nodeState.connectedPeers).also {
+            Log.d("HomeScreen", "📊 peerCount: $it (relayPeers=${relayPeers.size}, nodeState=${nodeState.connectedPeers})")
         }
-        val capabilityCount = remember(gossipStats) {
-            ((gossipStats["total_capabilities"] as? Number)?.toInt() ?: 0).also {
-                android.util.Log.d("HomeScreen", "📊 capabilityCount computed: $it from gossipStats keys=${gossipStats.keys}")
-            }
+        val capabilityCount = ((gossipStats["total_capabilities"] as? Number)?.toInt() ?: 0).also {
+            Log.d("HomeScreen", "📊 capabilityCount: $it from gossipStats keys=${gossipStats.keys}")
         }
         
         // 📊 Debug log for stats
