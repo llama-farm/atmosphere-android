@@ -6,19 +6,30 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.llamafarm.atmosphere.viewmodel.AtmosphereViewModel
 import com.llamafarm.atmosphere.viewmodel.ChatViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
-    viewModel: ChatViewModel = viewModel()
+    chatViewModel: ChatViewModel = viewModel(),
+    atmosphereViewModel: AtmosphereViewModel = viewModel()
 ) {
+    // Connect AtmosphereViewModel to ChatViewModel for mesh routing
+    LaunchedEffect(atmosphereViewModel) {
+        chatViewModel.setAtmosphereViewModel(atmosphereViewModel)
+    }
+    
+    val viewModel = chatViewModel
+    val isConnectedToMesh by atmosphereViewModel.isConnectedToMesh.collectAsState()
     val messages by viewModel.messages.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     var inputText by remember { mutableStateOf("") }
@@ -27,7 +38,21 @@ fun MainScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Atmosphere") },
+                title = { 
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Atmosphere")
+                        Spacer(Modifier.width(8.dp))
+                        Icon(
+                            imageVector = if (isConnectedToMesh) Icons.Default.Cloud else Icons.Default.CloudOff,
+                            contentDescription = if (isConnectedToMesh) "Connected to mesh" else "Not connected",
+                            tint = if (isConnectedToMesh) 
+                                MaterialTheme.colorScheme.primary 
+                            else 
+                                MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer
                 )
@@ -116,22 +141,32 @@ fun ChatBubble(message: ChatViewModel.ChatMessage) {
     ) {
         Surface(
             shape = MaterialTheme.shapes.medium,
-            color = if (isUser) {
-                MaterialTheme.colorScheme.primaryContainer
-            } else {
-                MaterialTheme.colorScheme.secondaryContainer
+            color = when {
+                message.isError -> MaterialTheme.colorScheme.errorContainer
+                isUser -> MaterialTheme.colorScheme.primaryContainer
+                else -> MaterialTheme.colorScheme.secondaryContainer
             },
             modifier = Modifier.widthIn(max = 300.dp)
         ) {
-            Text(
-                text = message.content,
-                modifier = Modifier.padding(12.dp),
-                color = if (isUser) {
-                    MaterialTheme.colorScheme.onPrimaryContainer
-                } else {
-                    MaterialTheme.colorScheme.onSecondaryContainer
+            Column(modifier = Modifier.padding(12.dp)) {
+                Text(
+                    text = message.content,
+                    color = when {
+                        message.isError -> MaterialTheme.colorScheme.onErrorContainer
+                        isUser -> MaterialTheme.colorScheme.onPrimaryContainer
+                        else -> MaterialTheme.colorScheme.onSecondaryContainer
+                    }
+                )
+                // Show source for non-user messages
+                if (!isUser && message.source != null) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "via ${message.source}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
                 }
-            )
+            }
         }
     }
 }

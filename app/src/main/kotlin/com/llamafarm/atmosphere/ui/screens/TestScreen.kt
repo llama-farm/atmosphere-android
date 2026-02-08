@@ -28,7 +28,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.activity.compose.rememberLauncherForActivityResult
 import com.llamafarm.atmosphere.network.ConnectionState
-import com.llamafarm.atmosphere.router.RouteResult
+import com.llamafarm.atmosphere.router.RoutingDecision
 import com.llamafarm.atmosphere.viewmodel.AtmosphereViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -38,7 +38,7 @@ import kotlinx.coroutines.launch
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TestScreen(viewModel: AtmosphereViewModel) {
+fun TestScreen(viewModel: AtmosphereViewModel, onNavigateToPairing: () -> Unit) {
     val connectionState by viewModel.meshConnectionState.collectAsState()
     val meshName by viewModel.meshName.collectAsState()
     val nodeState by viewModel.nodeState.collectAsState()
@@ -97,7 +97,7 @@ fun TestScreen(viewModel: AtmosphereViewModel) {
             // Content
             when (selectedTab) {
                 0 -> InferenceTestTab(viewModel, isConnected)
-                1 -> ConnectivityTestTab(viewModel, isConnected, nodeState)
+                1 -> ConnectivityTestTab(viewModel, isConnected, nodeState, onNavigateToPairing)
                 2 -> NodesTestTab(viewModel, isConnected, peers)
             }
         }
@@ -321,7 +321,8 @@ private fun InferenceTestTab(viewModel: AtmosphereViewModel, isConnected: Boolea
 private fun ConnectivityTestTab(
     viewModel: AtmosphereViewModel,
     isConnected: Boolean,
-    nodeState: AtmosphereViewModel.NodeState
+    nodeState: AtmosphereViewModel.NodeState,
+    onNavigateToPairing: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
     
@@ -451,7 +452,7 @@ private fun ConnectivityTestTab(
         }
         
         // BLE Mesh Test
-        BleTestCard(viewModel)
+        BleTestCard(viewModel, onNavigateToPairing)
         
         // Connection Info
         Card(modifier = Modifier.fillMaxWidth()) {
@@ -484,7 +485,7 @@ private fun ConnectivityTestTab(
  * BLE Mesh test card - Start/stop BLE and see discovered peers.
  */
 @Composable
-private fun BleTestCard(viewModel: AtmosphereViewModel) {
+private fun BleTestCard(viewModel: AtmosphereViewModel, onNavigateToPairing: () -> Unit) {
     val bleEnabled by viewModel.bleEnabled.collectAsState()
     val blePeers by viewModel.blePeers.collectAsState()
     val meshName by viewModel.meshName.collectAsState()
@@ -558,7 +559,7 @@ private fun BleTestCard(viewModel: AtmosphereViewModel) {
                 Button(
                     onClick = {
                         if (bleEnabled) {
-                            viewModel.stopBle()
+                            onNavigateToPairing()
                         } else {
                             // Check permissions first
                             if (hasPermissions()) {
@@ -570,12 +571,22 @@ private fun BleTestCard(viewModel: AtmosphereViewModel) {
                     }
                 ) {
                     Icon(
-                        if (bleEnabled) Icons.Default.Stop else Icons.Default.PlayArrow,
+                        if (bleEnabled) Icons.Default.Security else Icons.Default.PlayArrow,
                         contentDescription = null,
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(Modifier.width(4.dp))
-                    Text(if (bleEnabled) "Stop" else "Start")
+                    Text(if (bleEnabled) "Pairing" else "Start")
+                }
+            }
+            
+            if (bleEnabled) {
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { viewModel.stopBle() },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Stop Scanning")
                 }
             }
             
@@ -1134,7 +1145,7 @@ private fun ErrorCard(message: String) {
  * Shows how the intent was routed to a capability.
  */
 @Composable
-private fun SemanticRouterCard(route: RouteResult) {
+private fun SemanticRouterCard(route: RoutingDecision) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -1165,7 +1176,7 @@ private fun SemanticRouterCard(route: RouteResult) {
                     color = MaterialTheme.colorScheme.tertiaryContainer
                 ) {
                     Text(
-                        text = route.method.uppercase(),
+                        text = route.matchMethod.name,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
@@ -1188,7 +1199,7 @@ private fun SemanticRouterCard(route: RouteResult) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        text = route.capability.name,
+                        text = route.capability.label,
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium
                     )
@@ -1202,12 +1213,12 @@ private fun SemanticRouterCard(route: RouteResult) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Text(
-                        text = String.format("%.1f%%", route.score * 100),
+                        text = String.format("%.1f%%", route.scoreBreakdown.compositeScore * 100),
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Bold,
                         color = when {
-                            route.score > 0.8f -> Color(0xFF4CAF50)
-                            route.score > 0.5f -> Color(0xFFFFA726)
+                            route.scoreBreakdown.compositeScore > 0.8f -> Color(0xFF4CAF50)
+                            route.scoreBreakdown.compositeScore > 0.5f -> Color(0xFFFFA726)
                             else -> Color(0xFFEF5350)
                         }
                     )
@@ -1239,7 +1250,7 @@ private fun SemanticRouterCard(route: RouteResult) {
                     )
                     Spacer(Modifier.width(4.dp))
                     Text(
-                        text = route.capability.handler,
+                        text = route.capability.projectPath,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

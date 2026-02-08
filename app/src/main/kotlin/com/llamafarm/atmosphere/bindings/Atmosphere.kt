@@ -1,8 +1,12 @@
 // Atmosphere Android - Kotlin JNI Bindings
 // Auto-generated from atmosphere.udl - DO NOT EDIT MANUALLY
 // Generated: 2026-02-03
+// Updated: 2026-02-04 - Added networking functions
 
 package com.llamafarm.atmosphere.bindings
+
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Error types that can occur in Atmosphere operations
@@ -13,6 +17,35 @@ sealed class AtmosphereException(message: String) : Exception(message) {
     class CapabilityNotFound(message: String = "Capability not found") : AtmosphereException(message)
     class NodeNotRunning(message: String = "Node not running") : AtmosphereException(message)
     class SerializationError(message: String = "Serialization error") : AtmosphereException(message)
+    class MeshConnectionError(message: String = "Mesh connection error") : AtmosphereException(message)
+}
+
+/**
+ * Represents a peer in the mesh network.
+ */
+data class MeshPeer(
+    val nodeId: String,
+    val name: String,
+    val address: String,
+    val connected: Boolean,
+    val latencyMs: Int?,
+    val capabilities: List<String>
+) {
+    companion object {
+        fun fromJson(json: JSONObject): MeshPeer {
+            return MeshPeer(
+                nodeId = json.optString("node_id", "unknown"),
+                name = json.optString("name", "Unknown Node"),
+                address = json.optString("address", ""),
+                connected = json.optBoolean("connected", false),
+                latencyMs = if (json.has("latency_ms") && !json.isNull("latency_ms")) 
+                    json.getInt("latency_ms") else null,
+                capabilities = json.optJSONArray("capabilities")?.let { arr ->
+                    (0 until arr.length()).map { arr.getString(it) }
+                } ?: emptyList()
+            )
+        }
+    }
 }
 
 /**
@@ -110,7 +143,10 @@ class AtmosphereNode private constructor(private val handle: Long) {
      *   "node_id": "...",
      *   "is_running": true,
      *   "capabilities_count": 5,
-     *   "connected_peers": 3
+     *   "connected_peers": 3,
+     *   "mesh_connected": true,
+     *   "mesh_id": "...",
+     *   "mesh_name": "..."
      * }
      * ```
      */
@@ -148,6 +184,94 @@ class AtmosphereNode private constructor(private val handle: Long) {
         return result
     }
     
+    // ========================================================================
+    // NEW: Networking Functions
+    // ========================================================================
+    
+    /**
+     * Join a mesh network via WebSocket.
+     *
+     * @param endpoint The WebSocket endpoint (e.g., "ws://192.168.1.100:11451/api/ws")
+     * @param token The authentication token for joining
+     * @throws AtmosphereException if connection fails
+     */
+    @Throws(AtmosphereException::class)
+    fun joinMesh(endpoint: String, token: String) {
+        val result = nativeJoinMesh(handle, endpoint, token)
+        if (result != 0) {
+            throw AtmosphereException.MeshConnectionError("Failed to join mesh: error code $result")
+        }
+    }
+    
+    /**
+     * Disconnect from the current mesh network.
+     */
+    fun disconnectMesh() {
+        nativeDisconnectMesh(handle)
+    }
+    
+    /**
+     * Discover peers on the mesh network.
+     *
+     * @return JSON array string of discovered peers
+     */
+    fun discoverPeers(): String {
+        return nativeDiscoverPeers(handle)
+    }
+    
+    /**
+     * Discover peers and return as a list of MeshPeer objects.
+     */
+    fun discoverPeersList(): List<MeshPeer> {
+        val json = discoverPeers()
+        return parsePeersJson(json)
+    }
+    
+    /**
+     * Connect to a specific peer by address.
+     *
+     * @param address The peer's address (e.g., "192.168.1.100:11451")
+     * @throws AtmosphereException if connection fails
+     */
+    @Throws(AtmosphereException::class)
+    fun connectToPeer(address: String) {
+        val result = nativeConnectToPeer(handle, address)
+        if (result != 0) {
+            throw AtmosphereException.NetworkError("Failed to connect to peer: error code $result")
+        }
+    }
+    
+    /**
+     * Get the list of connected peers as JSON.
+     *
+     * @return JSON array string of connected peers
+     */
+    fun getPeers(): String {
+        return nativeGetPeers(handle)
+    }
+    
+    /**
+     * Get the list of connected peers as MeshPeer objects.
+     */
+    fun getPeersList(): List<MeshPeer> {
+        val json = getPeers()
+        return parsePeersJson(json)
+    }
+    
+    /**
+     * Send a gossip message to the mesh.
+     *
+     * @param message The message to broadcast
+     * @throws AtmosphereException if sending fails
+     */
+    @Throws(AtmosphereException::class)
+    fun sendGossip(message: String) {
+        val result = nativeSendGossip(handle, message)
+        if (result != 0) {
+            throw AtmosphereException.NetworkError("Failed to send gossip: error code $result")
+        }
+    }
+    
     /**
      * Release native resources.
      */
@@ -159,7 +283,19 @@ class AtmosphereNode private constructor(private val handle: Long) {
         destroy()
     }
     
-    // Native instance methods
+    // Helper function to parse peers JSON
+    private fun parsePeersJson(json: String): List<MeshPeer> {
+        return try {
+            val array = JSONArray(json)
+            (0 until array.length()).map { 
+                MeshPeer.fromJson(array.getJSONObject(it)) 
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+    
+    // Native instance methods - existing
     private external fun nativeStart(handle: Long): Int
     private external fun nativeStop(handle: Long)
     private external fun nativeIsRunning(handle: Long): Boolean
@@ -169,4 +305,12 @@ class AtmosphereNode private constructor(private val handle: Long) {
     private external fun nativeRegisterCapability(handle: Long, json: String): Int
     private external fun nativeRouteIntent(handle: Long, json: String): String
     private external fun nativeDestroy(handle: Long)
+    
+    // Native instance methods - networking (NEW)
+    private external fun nativeJoinMesh(handle: Long, endpoint: String, token: String): Int
+    private external fun nativeDisconnectMesh(handle: Long)
+    private external fun nativeDiscoverPeers(handle: Long): String
+    private external fun nativeConnectToPeer(handle: Long, address: String): Int
+    private external fun nativeGetPeers(handle: Long): String
+    private external fun nativeSendGossip(handle: Long, message: String): Int
 }

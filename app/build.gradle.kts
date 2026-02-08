@@ -2,16 +2,21 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("org.jetbrains.kotlin.plugin.parcelize")
 }
+
+// Check for local llama.cpp AAR
+val llamaAarFile = file("libs/llama-android.aar")
+val hasLlamaAar = llamaAarFile.exists()
 
 android {
     namespace = "com.llamafarm.atmosphere"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.llamafarm.atmosphere"
-        minSdk = 24
-        targetSdk = 34
+        minSdk = 33  // Required by llama.cpp AAR
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
 
@@ -79,13 +84,16 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
+    kotlin {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        }
     }
 
     buildFeatures {
         compose = true
         buildConfig = true
+        aidl = true
     }
 
     packaging {
@@ -99,21 +107,28 @@ android {
             useLegacyPackaging = false
         }
     }
+    
+    // Don't compress large model files - they're already compressed
+    androidResources {
+        noCompress += listOf("gguf", "bin", "model")
+    }
 
     sourceSets {
         getByName("main") {
-            // Include Rust-built native libraries
-            jniLibs.srcDirs("src/main/jniLibs", "../rust/target/jniLibs")
+            // Include Rust-built native libraries and llama.cpp libraries
+            jniLibs.srcDirs("src/main/jniLibs", "../rust/target/jniLibs", "libs/jniLibs")
         }
     }
-
-    // Task dependency: build Rust before compiling (disabled for now - build Rust separately)
-    // tasks.matching { it.name.startsWith("compile") && it.name.contains("Kotlin") }.configureEach {
-    //     dependsOn(rootProject.tasks.named("buildRust"))
-    // }
 }
 
 dependencies {
+    // Local llama.cpp AAR (if available)
+    // To build: clone llama.cpp, run ./gradlew :examples:llama.android:lib:assembleRelease
+    // Copy the AAR to app/libs/llama-android.aar
+    // See app/libs/README.md for detailed instructions
+    if (hasLlamaAar) {
+        implementation(files("libs/llama-android.aar"))
+    }
     // Core Android
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
@@ -132,13 +147,26 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.7.7")
 
     // Coroutines
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
     // DataStore for preferences
     implementation("androidx.datastore:datastore-preferences:1.0.0")
 
     // WorkManager for background processing
     implementation("androidx.work:work-runtime-ktx:2.9.0")
+    
+    // CameraX for QR scanning
+    val cameraxVersion = "1.3.1"
+    implementation("androidx.camera:camera-core:$cameraxVersion")
+    implementation("androidx.camera:camera-camera2:$cameraxVersion")
+    implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
+    implementation("androidx.camera:camera-view:$cameraxVersion")
+    
+    // ML Kit Barcode Scanning for QR codes
+    implementation("com.google.mlkit:barcode-scanning:17.2.0")
+    
+    // OkHttp for WebSocket mesh connection
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // Testing
     testImplementation("junit:junit:4.13.2")

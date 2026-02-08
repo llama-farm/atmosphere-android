@@ -1,6 +1,7 @@
 package com.llamafarm.atmosphere.data
 
 import android.content.Context
+import android.util.Log
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -8,7 +9,11 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import org.json.JSONArray
+
+private const val TAG = "DataStoreModule"
 
 // Extension property for Context to access DataStore
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "atmosphere_settings")
@@ -33,11 +38,19 @@ object PreferenceKeys {
     val AUTO_START_ON_BOOT = booleanPreferencesKey("auto_start_on_boot")
     val BATTERY_OPTIMIZATION_DISMISSED = booleanPreferencesKey("battery_optimization_dismissed")
     
-    // Mesh connection
+    // Mesh connection (legacy - single mesh)
     val LAST_MESH_ENDPOINT = stringPreferencesKey("last_mesh_endpoint")
     val LAST_MESH_TOKEN = stringPreferencesKey("last_mesh_token")
     val LAST_MESH_NAME = stringPreferencesKey("last_mesh_name")
     val AUTO_RECONNECT_MESH = booleanPreferencesKey("auto_reconnect_mesh")
+    val LAST_MESH_ENDPOINTS_JSON = stringPreferencesKey("last_mesh_endpoints_json")  // Full endpoints map
+    val LAST_MESH_INVITE_JSON = stringPreferencesKey("last_mesh_invite_json")  // Full invite for display
+    
+    // Saved meshes (NEW - multiple meshes as JSON array)
+    val SAVED_MESHES_JSON = stringPreferencesKey("saved_meshes_json")
+    
+    // Currently connected mesh ID
+    val CURRENT_MESH_ID = stringPreferencesKey("current_mesh_id")
     
     // Transport settings
     val TRANSPORT_LAN_ENABLED = booleanPreferencesKey("transport_lan_enabled")
@@ -143,6 +156,23 @@ class AtmospherePreferences(private val context: Context) {
         }
     }
     
+    /**
+     * Get existing node ID or create a new one.
+     * Returns a stable ID for this device instance.
+     */
+    suspend fun getOrCreateNodeId(): String {
+        val existingId = dataStore.data.map { preferences ->
+            preferences[PreferenceKeys.NODE_ID]
+        }.first()
+        
+        return existingId ?: run {
+            // Generate new node ID
+            val newId = java.util.UUID.randomUUID().toString().replace("-", "").take(16)
+            setNodeId(newId)
+            newId
+        }
+    }
+    
     // ========================================================================
     // Behavior Settings
     // ========================================================================
@@ -184,7 +214,22 @@ class AtmospherePreferences(private val context: Context) {
     }
     
     val autoReconnectMesh: Flow<Boolean> = dataStore.data.map { preferences ->
-        preferences[PreferenceKeys.AUTO_RECONNECT_MESH] ?: false
+        preferences[PreferenceKeys.AUTO_RECONNECT_MESH] ?: true  // Default to true for seamless reconnection
+    }
+    
+    val lastMeshEndpointsJson: Flow<String?> = dataStore.data.map { preferences ->
+        preferences[PreferenceKeys.LAST_MESH_ENDPOINTS_JSON]
+    }
+    
+    val lastMeshInviteJson: Flow<String?> = dataStore.data.map { preferences ->
+        preferences[PreferenceKeys.LAST_MESH_INVITE_JSON]
+    }
+    
+    /**
+     * Check if we have a saved mesh connection.
+     */
+    val hasSavedMeshConnection: Flow<Boolean> = dataStore.data.map { preferences ->
+        preferences[PreferenceKeys.LAST_MESH_TOKEN] != null
     }
     
     suspend fun saveMeshConnection(endpoint: String, token: String, meshName: String?) {
@@ -192,6 +237,29 @@ class AtmospherePreferences(private val context: Context) {
             preferences[PreferenceKeys.LAST_MESH_ENDPOINT] = endpoint
             preferences[PreferenceKeys.LAST_MESH_TOKEN] = token
             meshName?.let { preferences[PreferenceKeys.LAST_MESH_NAME] = it }
+            // Auto-enable reconnect when a connection is saved
+            preferences[PreferenceKeys.AUTO_RECONNECT_MESH] = true
+        }
+    }
+    
+    /**
+     * Save full mesh connection with endpoints map for proper reconnection.
+     */
+    suspend fun saveMeshConnectionFull(
+        endpoint: String, 
+        token: String, 
+        meshName: String?,
+        endpointsJson: String?,
+        inviteJson: String?
+    ) {
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.LAST_MESH_ENDPOINT] = endpoint
+            preferences[PreferenceKeys.LAST_MESH_TOKEN] = token
+            meshName?.let { preferences[PreferenceKeys.LAST_MESH_NAME] = it }
+            endpointsJson?.let { preferences[PreferenceKeys.LAST_MESH_ENDPOINTS_JSON] = it }
+            inviteJson?.let { preferences[PreferenceKeys.LAST_MESH_INVITE_JSON] = it }
+            // Auto-enable reconnect when a connection is saved
+            preferences[PreferenceKeys.AUTO_RECONNECT_MESH] = true
         }
     }
     
@@ -200,6 +268,8 @@ class AtmospherePreferences(private val context: Context) {
             preferences.remove(PreferenceKeys.LAST_MESH_ENDPOINT)
             preferences.remove(PreferenceKeys.LAST_MESH_TOKEN)
             preferences.remove(PreferenceKeys.LAST_MESH_NAME)
+            preferences.remove(PreferenceKeys.LAST_MESH_ENDPOINTS_JSON)
+            preferences.remove(PreferenceKeys.LAST_MESH_INVITE_JSON)
         }
     }
     
@@ -314,5 +384,148 @@ class AtmospherePreferences(private val context: Context) {
             "relay" to (preferences[PreferenceKeys.TRANSPORT_RELAY_ENABLED] ?: true),
             "prefer_local_only" to (preferences[PreferenceKeys.TRANSPORT_PREFER_LOCAL_ONLY] ?: false)
         )
+    }
+    
+    // ========================================================================
+    // Saved Meshes (Multiple mesh persistence)
+    // ========================================================================
+    
+    /**
+     * Flow of saved meshes JSON string.
+     */
+    val savedMeshesJson: Flow<String?> = dataStore.data.map { preferences ->
+        preferences[PreferenceKeys.SAVED_MESHES_JSON]
+    }
+    
+    /**
+     * Get all saved meshes.
+     */
+    suspend fun getSavedMeshes(): List<SavedMesh> {
+        val json = dataStore.data.map { preferences ->
+            preferences[PreferenceKeys.SAVED_MESHES_JSON]
+        }.first()
+        
+        return try {
+            if (json.isNullOrEmpty()) {
+                emptyList()
+            } else {
+                val array = JSONArray(json)
+                (0 until array.length()).map { i ->
+                    SavedMesh.fromJson(array.getJSONObject(i))
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse saved meshes", e)
+            emptyList()
+        }
+    }
+    
+    /**
+     * Save list of meshes (replaces all).
+     */
+    suspend fun saveMeshes(meshes: List<SavedMesh>) {
+        val array = JSONArray().apply {
+            meshes.forEach { put(it.toJson()) }
+        }
+        dataStore.edit { preferences ->
+            preferences[PreferenceKeys.SAVED_MESHES_JSON] = array.toString()
+        }
+        Log.d(TAG, "Saved ${meshes.size} meshes")
+    }
+    
+    /**
+     * Add or update a single mesh.
+     */
+    suspend fun saveMesh(mesh: SavedMesh) {
+        val meshes = getSavedMeshes().toMutableList()
+        val existingIndex = meshes.indexOfFirst { it.meshId == mesh.meshId }
+        
+        if (existingIndex >= 0) {
+            meshes[existingIndex] = mesh
+        } else {
+            meshes.add(mesh)
+        }
+        
+        saveMeshes(meshes)
+    }
+    
+    /**
+     * Remove a mesh by ID.
+     */
+    suspend fun removeMesh(meshId: String) {
+        val meshes = getSavedMeshes().filter { it.meshId != meshId }
+        saveMeshes(meshes)
+    }
+    
+    /**
+     * Get a mesh by ID.
+     */
+    suspend fun getMesh(meshId: String): SavedMesh? {
+        return getSavedMeshes().find { it.meshId == meshId }
+    }
+    
+    /**
+     * Get/set currently connected mesh ID.
+     */
+    val currentMeshId: Flow<String?> = dataStore.data.map { preferences ->
+        preferences[PreferenceKeys.CURRENT_MESH_ID]
+    }
+    
+    suspend fun setCurrentMeshId(meshId: String?) {
+        dataStore.edit { preferences ->
+            if (meshId != null) {
+                preferences[PreferenceKeys.CURRENT_MESH_ID] = meshId
+            } else {
+                preferences.remove(PreferenceKeys.CURRENT_MESH_ID)
+            }
+        }
+    }
+    
+    /**
+     * Migrate legacy mesh connection to new SavedMesh format.
+     * Call this on app start to preserve existing connections.
+     */
+    suspend fun migrateLegacyMeshConnection() {
+        val existingMeshes = getSavedMeshes()
+        if (existingMeshes.isNotEmpty()) {
+            // Already migrated
+            return
+        }
+        
+        val token = lastMeshToken.first() ?: return
+        val endpoint = lastMeshEndpoint.first() ?: return
+        val meshName = lastMeshName.first() ?: "My Mesh"
+        val endpointsJson = lastMeshEndpointsJson.first()
+        
+        Log.i(TAG, "Migrating legacy mesh connection: $meshName")
+        
+        // Parse endpoints map
+        val endpointsMap = try {
+            endpointsJson?.let { json ->
+                val obj = org.json.JSONObject(json)
+                mutableMapOf<String, String>().apply {
+                    obj.keys().forEach { key ->
+                        put(key, obj.getString(key))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            null
+        }
+        
+        // If no endpoints map, create one from the single endpoint
+        val finalEndpoints = endpointsMap ?: mapOf("relay" to endpoint)
+        
+        val savedMesh = SavedMesh.fromJoin(
+            meshId = meshName.hashCode().toString(16),  // Generate ID from name
+            meshName = meshName,
+            founderId = "",
+            founderName = "Unknown",
+            token = token,
+            endpointsMap = finalEndpoints
+        )
+        
+        saveMesh(savedMesh)
+        Log.i(TAG, "Migration complete: created SavedMesh ${savedMesh.meshId}")
     }
 }

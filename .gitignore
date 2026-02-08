@@ -30,3 +30,8 @@ Thumbs.db
 
 # Test outputs
 app/build/
+app/build/
+*.apk
+*.aab
+target/
+android/target/

@@ -120,6 +120,17 @@
                 android:value="mesh_networking" />
         </service>
 
+        <!-- Persistent Mesh Connection Service -->
+        <service
+            android:name=".service.MeshService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="mesh_networking" />
+        </service>
+
         <!-- Inference Service -->
         <service
             android:name=".service.InferenceService"

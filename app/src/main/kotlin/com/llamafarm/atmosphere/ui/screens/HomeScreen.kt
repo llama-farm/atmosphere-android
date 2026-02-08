@@ -638,6 +638,9 @@ private fun MeshEventsFeed(
     events: List<AtmosphereViewModel.MeshEvent>,
     modifier: Modifier = Modifier
 ) {
+    // Force log to verify this composable is actually being called
+    Log.d("HomeScreen", "📡 MeshEventsFeed rendered with ${events.size} events")
+    
     Card(
         modifier = modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -678,10 +681,12 @@ private fun MeshEventsFeed(
                 )
             } else {
                 Spacer(Modifier.height(8.dp))
+                Log.d("HomeScreen", "📡 Rendering ${events.size} event rows")
                 Column(
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    events.take(50).forEach { event ->
+                    events.take(50).forEachIndexed { index, event ->
+                        Log.d("HomeScreen", "📡 Rendering event $index: ${event.title}")
                         MeshEventRow(event)
                     }
                 }
@@ -696,6 +701,8 @@ private fun MeshEventRow(event: AtmosphereViewModel.MeshEvent) {
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
     val timeStr = timeFormat.format(Date(event.timestamp))
     val hasDetail = event.metadata.isNotEmpty() || !event.detail.isNullOrEmpty()
+    
+    Log.d("HomeScreen", "📡 MeshEventRow: ${event.title} (type=${event.type}, hasDetail=$hasDetail)")
     
     val (icon, color) = when (event.type) {
         "connected" -> Icons.Default.Link to Color(0xFF4CAF50)

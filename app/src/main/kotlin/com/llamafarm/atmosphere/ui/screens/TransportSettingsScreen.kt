@@ -23,8 +23,11 @@ import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.wifi.p2p.WifiP2pManager
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.llamafarm.atmosphere.data.AtmospherePreferences
+import com.llamafarm.atmosphere.network.ConnectionState
 import com.llamafarm.atmosphere.network.TransportType
+import com.llamafarm.atmosphere.viewmodel.AtmosphereViewModel
 import kotlinx.coroutines.launch
 
 /**
@@ -53,11 +56,16 @@ data class TransportInfo(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TransportSettingsScreen(
+    viewModel: AtmosphereViewModel = viewModel(),
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val preferences = remember { AtmospherePreferences(context) }
+    
+    // Get relay connection state from ViewModel
+    val relayConnectionState by viewModel.relayConnectionState.collectAsState()
+    val isConnectedToMesh by viewModel.isConnectedToMesh.collectAsState()
     
     // Collect transport states
     val lanEnabled by preferences.transportLanEnabled.collectAsState(initial = true)
@@ -83,8 +91,17 @@ fun TransportSettingsScreen(
         }
     }
     
+    // Map relay connection state to transport status
+    val relayStatus = when {
+        preferLocalOnly -> TransportStatus.UNAVAILABLE
+        !relayEnabled -> TransportStatus.UNAVAILABLE
+        relayConnectionState == ConnectionState.CONNECTED -> TransportStatus.CONNECTED
+        relayConnectionState == ConnectionState.CONNECTING || relayConnectionState == ConnectionState.RECONNECTING -> TransportStatus.CONNECTING
+        else -> TransportStatus.DISCONNECTED
+    }
+    
     // Build transport info list with current states
-    val transports = remember(lanEnabled, wifiDirectEnabled, bleMeshEnabled, matterEnabled, relayEnabled, hasBluetooth, hasWifiDirect, bluetoothEnabled) {
+    val transports = remember(lanEnabled, wifiDirectEnabled, bleMeshEnabled, matterEnabled, relayEnabled, hasBluetooth, hasWifiDirect, bluetoothEnabled, relayStatus) {
         listOf(
             TransportInfo(
                 type = TransportType.LAN,
@@ -92,7 +109,12 @@ fun TransportSettingsScreen(
                 description = "Local network connection via WiFi router",
                 icon = Icons.Default.Wifi,
                 enabled = lanEnabled,
-                status = if (lanEnabled) TransportStatus.DISCONNECTED else TransportStatus.UNAVAILABLE,
+                // LAN status based on mesh connection when using local endpoint
+                status = when {
+                    !lanEnabled -> TransportStatus.UNAVAILABLE
+                    isConnectedToMesh && relayStatus != TransportStatus.CONNECTED -> TransportStatus.CONNECTED
+                    else -> TransportStatus.DISCONNECTED
+                },
                 latencyMs = null
             ),
             TransportInfo(
@@ -135,10 +157,10 @@ fun TransportSettingsScreen(
             TransportInfo(
                 type = TransportType.RELAY,
                 displayName = "Relay Server",
-                description = "Cloud fallback for NAT traversal",
+                description = "Cloud relay for mesh connectivity",
                 icon = Icons.Default.Cloud,
                 enabled = relayEnabled && !preferLocalOnly,
-                status = if (relayEnabled && !preferLocalOnly) TransportStatus.DISCONNECTED else TransportStatus.UNAVAILABLE,
+                status = relayStatus,
                 latencyMs = null
             )
         )
