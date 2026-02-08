@@ -88,6 +88,12 @@ class AtmosphereService : Service() {
     inner class LocalBinder : Binder() {
         fun getService(): AtmosphereService = this@AtmosphereService
     }
+    
+    // Public accessors for BinderService / SDK
+    fun isConnected(): Boolean = meshConnection?.connectionState?.value == com.llamafarm.atmosphere.network.ConnectionState.CONNECTED
+    fun getNodeId(): String? = _nodeId.value
+    fun getMeshId(): String? = currentMeshId
+    fun getRelayPeerCount(): Int = _relayPeers.value.size
 
     private val binder = LocalBinder()
     private var wakeLock: PowerManager.WakeLock? = null
