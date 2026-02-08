@@ -174,6 +174,20 @@ class MeshConnection(
     /**
      * Send a message to the relay.
      */
+    /**
+     * Send a broadcast message through the WebSocket (relay or LAN).
+     * Used for cross-transport bridging.
+     * Returns true if sent.
+     */
+    fun sendBroadcast(payload: JSONObject): Boolean {
+        val ws = webSocket ?: return false
+        val msg = JSONObject().apply {
+            put("type", "broadcast")
+            put("payload", payload)
+        }
+        return ws.send(msg.toString())
+    }
+    
     fun sendMessage(message: JSONObject) {
         val ws = webSocket
         if (ws == null) {
@@ -228,14 +242,18 @@ class MeshConnection(
             val json = JSONObject(text)
             val type = json.optString("type", "unknown")
             
+            // Log ALL incoming messages for debugging
+            Log.i(TAG, "🔵 WS received: type=$type (${text.length} bytes)")
+            
             when (type) {
                 "capability_announce" -> {
                     // Another node is announcing capabilities
                     val nodeId = json.getString("node_id")
                     gossipManager.handleAnnouncement(nodeId, json)
                     
+                    val capList = extractCapabilityLabels(json)
                     scope.launch {
-                        _messages.emit(MeshMessage.CapabilityAnnounce(nodeId, json))
+                        _messages.emit(MeshMessage.CapabilityAnnounce(nodeId, json, capList, nodeId))
                     }
                 }
                 
@@ -278,7 +296,7 @@ class MeshConnection(
                     
                     if (payload != null) {
                         val payloadType = payload.optString("type", "")
-                        Log.d(TAG, "📨 Received message from $fromNode: type=$payloadType")
+                        Log.i(TAG, "📨 Received message from $fromNode: type=$payloadType (payload keys: ${payload.keys().asSequence().toList().take(5)})")
                         
                         when (payloadType) {
                             "gossip.announce", "capability.announce", "capability_announce" -> {
@@ -289,8 +307,9 @@ class MeshConnection(
                                 
                                 if (capabilities != null && capabilities.length() > 0) {
                                     gossipManager.handleAnnouncement(nodeId, payload)
+                                    val capList = extractCapabilityLabels(payload)
                                     scope.launch {
-                                        _messages.emit(MeshMessage.CapabilityAnnounce(nodeId, payload))
+                                        _messages.emit(MeshMessage.CapabilityAnnounce(nodeId, payload, capList, fromNode))
                                     }
                                 }
                             }
@@ -311,9 +330,49 @@ class MeshConnection(
                     }
                 }
                 
-                "joined", "peers", "peer_joined", "peer_left" -> {
-                    // Relay protocol messages - just log
-                    Log.d(TAG, "Relay event: $type")
+                "joined" -> {
+                    Log.i(TAG, "✅ Joined mesh via relay")
+                    val meshName = json.optString("mesh", "unknown")
+                    val nodeCount = json.optInt("node_count", 0)
+                    scope.launch {
+                        _messages.emit(MeshMessage.Joined(meshName, sourceNodeId = null))
+                    }
+                }
+                
+                "peers" -> {
+                    // Parse peer list from relay
+                    val peersArray = json.optJSONArray("peers")
+                    val peerList = mutableListOf<com.llamafarm.atmosphere.network.RelayPeer>()
+                    if (peersArray != null) {
+                        for (i in 0 until peersArray.length()) {
+                            val p = peersArray.getJSONObject(i)
+                            val caps = mutableListOf<String>()
+                            p.optJSONArray("capabilities")?.let { arr ->
+                                for (j in 0 until arr.length()) caps.add(arr.getString(j))
+                            }
+                            peerList.add(RelayPeer(
+                                nodeId = p.getString("node_id"),
+                                name = p.optString("name", p.getString("node_id").take(8)),
+                                capabilities = caps,
+                                connected = true
+                            ))
+                        }
+                    }
+                    Log.i(TAG, "📋 Peers: ${peerList.size} (${peerList.map { it.name }})")
+                    scope.launch {
+                        _messages.emit(MeshMessage.PeerList(peerList))
+                    }
+                }
+                
+                "peer_joined" -> {
+                    val peerNodeId = json.optString("node_id", "unknown")
+                    val peerName = json.optString("name", peerNodeId.take(8))
+                    Log.i(TAG, "👋 Peer joined: $peerName ($peerNodeId)")
+                }
+                
+                "peer_left" -> {
+                    val peerNodeId = json.optString("node_id", "unknown")
+                    Log.i(TAG, "👋 Peer left: $peerNodeId")
                 }
 
                 "error" -> {
@@ -376,6 +435,35 @@ class MeshConnection(
     /**
      * Get current connection stats.
      */
+    /**
+     * Extract capability labels from a gossip announcement JSON.
+     * Handles both flat and nested capability formats.
+     */
+    private fun extractCapabilityLabels(json: JSONObject): List<String> {
+        val result = mutableListOf<String>()
+        val caps = json.optJSONArray("capabilities") ?: return result
+        for (i in 0 until caps.length()) {
+            try {
+                val item = caps.get(i)
+                when (item) {
+                    is JSONObject -> {
+                        // Full capability object — extract label, id, or description
+                        val label = item.optString("label", "")
+                            .ifEmpty { item.optString("id", "") }
+                            .ifEmpty { item.optString("name", "") }
+                            .ifEmpty { item.optString("description", "capability-$i") }
+                        result.add(label)
+                    }
+                    is String -> result.add(item)
+                    else -> result.add(item.toString())
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to extract capability at index $i: ${e.message}")
+            }
+        }
+        return result
+    }
+    
     fun getStats(): Map<String, Any> {
         return mapOf(
             "state" to _connectionState.value.name,

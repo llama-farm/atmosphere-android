@@ -13,12 +13,18 @@ pluginManagement {
 }
 
 dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
     repositories {
         google()
         mavenCentral()
+        // Local AAR files for llama.cpp native library
+        flatDir {
+            dirs("app/libs")
+        }
     }
 }
 
 rootProject.name = "Atmosphere"
 include(":app")
+include(":atmosphere-sdk")
+include(":atmosphere-client")
