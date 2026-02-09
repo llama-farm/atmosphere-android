@@ -19,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.Widgets
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Flight
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Memory
@@ -625,6 +626,11 @@ fun AtmosphereApp(screens: List<Screen>, initialDeepLink: DeepLinkData? = null) 
                 com.llamafarm.atmosphere.ui.screens.RagScreen(
                     llamaFarmLite = llamaFarmLite,
                     appId = context.packageName
+                )
+            }
+            composable(Screen.Horizon.route) {
+                com.llamafarm.atmosphere.horizon.HorizonScreen(
+                    atmosphereViewModel = viewModel
                 )
             }
             composable(Screen.VisionTest.route) {
