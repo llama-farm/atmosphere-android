@@ -209,11 +209,14 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
         // Observe mesh events from service
         observeServiceMeshEvents()
         
-        // Poll gossip stats periodically
+        // Poll gossip stats periodically (get initial stats immediately!)
         viewModelScope.launch {
+            _gossipStats.value = gossipManager.getStats()  // Initial stats
             while (true) {
                 delay(3000)
-                _gossipStats.value = gossipManager.getStats()
+                val newStats = gossipManager.getStats()
+                Log.d(TAG, "📊 Gossip stats update: ${newStats["total_capabilities"]} caps")
+                _gossipStats.value = newStats
             }
         }
         

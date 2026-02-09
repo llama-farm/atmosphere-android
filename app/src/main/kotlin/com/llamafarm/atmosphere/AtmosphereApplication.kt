@@ -14,6 +14,7 @@ import com.llamafarm.atmosphere.inference.ModelManager
 import com.llamafarm.atmosphere.auth.IdentityManager
 import com.llamafarm.atmosphere.service.ServiceManager
 import com.llamafarm.atmosphere.service.AtmosphereService
+import com.llamafarm.atmosphere.capabilities.CameraCapability
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -90,6 +91,9 @@ class AtmosphereApplication : Application() {
     var modelManager: ModelManager? = null
         private set
     
+    var cameraCapability: CameraCapability? = null
+        private set
+    
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
     override fun onCreate() {
@@ -160,6 +164,14 @@ class AtmosphereApplication : Application() {
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to initialize model manager: ${e.message}")
+        }
+        
+        // Camera capability for vision tasks
+        try {
+            cameraCapability = CameraCapability(this)
+            Log.d(TAG, "Camera capability initialized")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to initialize camera capability: ${e.message}")
         }
     }
     

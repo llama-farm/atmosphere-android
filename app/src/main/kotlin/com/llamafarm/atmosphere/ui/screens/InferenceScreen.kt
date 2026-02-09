@@ -22,9 +22,12 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun InferenceScreen(
-    viewModel: InferenceViewModel = viewModel()
+    viewModel: InferenceViewModel = viewModel(),
+    isMeshConnected: Boolean = false,
+    onMeshInference: ((String, (String?, String?) -> Unit) -> Unit)? = null
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val canChat = uiState.isModelLoaded || isMeshConnected
     var showModelPicker by remember { mutableStateOf(false) }
     var showPersonaPicker by remember { mutableStateOf(false) }
     var chatInput by remember { mutableStateOf("") }
@@ -118,8 +121,8 @@ fun InferenceScreen(
                 )
             }
             
-            // Chat area
-            if (uiState.isModelLoaded) {
+            // Chat area - show if local model loaded OR mesh connected
+            if (canChat) {
                 // Chat messages
                 LazyColumn(
                     state = listState,
@@ -167,32 +170,44 @@ fun InferenceScreen(
                             chatInput = ""
                             chatMessages = chatMessages + ("user" to userMessage)
                             
-                            scope.launch {
-                                val response = StringBuilder()
-                                try {
-                                    viewModel.chat(userMessage).collect { token ->
-                                        response.append(token)
-                                        // Update the last message (assistant response)
-                                        chatMessages = chatMessages.dropLast(1).let { msgs ->
-                                            if (msgs.lastOrNull()?.first == "assistant") {
-                                                msgs.dropLast(1) + ("assistant" to response.toString())
-                                            } else {
-                                                msgs + ("assistant" to response.toString())
+                            if (uiState.isModelLoaded) {
+                                // Local inference
+                                scope.launch {
+                                    val response = StringBuilder()
+                                    try {
+                                        viewModel.chat(userMessage).collect { token ->
+                                            response.append(token)
+                                            chatMessages = chatMessages.dropLast(1).let { msgs ->
+                                                if (msgs.lastOrNull()?.first == "assistant") {
+                                                    msgs.dropLast(1) + ("assistant" to response.toString())
+                                                } else {
+                                                    msgs + ("assistant" to response.toString())
+                                                }
                                             }
                                         }
+                                        chatMessages = chatMessages.dropLastWhile { it.first == "assistant" } + 
+                                            ("assistant" to response.toString())
+                                    } catch (e: Exception) {
+                                        chatMessages = chatMessages + ("assistant" to "Error: ${e.message}")
                                     }
-                                    // Final update
-                                    chatMessages = chatMessages.dropLastWhile { it.first == "assistant" } + 
-                                        ("assistant" to response.toString())
-                                } catch (e: Exception) {
-                                    chatMessages = chatMessages + ("assistant" to "Error: ${e.message}")
+                                }
+                            } else if (isMeshConnected && onMeshInference != null) {
+                                // Mesh fallover inference
+                                chatMessages = chatMessages + ("assistant" to "⏳ Routing to mesh...")
+                                onMeshInference(userMessage) { response, error ->
+                                    chatMessages = chatMessages.dropLastWhile { it.first == "assistant" }
+                                    if (error != null) {
+                                        chatMessages = chatMessages + ("assistant" to "❌ Mesh error: $error")
+                                    } else {
+                                        chatMessages = chatMessages + ("assistant" to (response ?: "No response"))
+                                    }
                                 }
                             }
                         }
                     },
                     onCancel = { viewModel.cancelGeneration() },
                     isGenerating = uiState.isGenerating,
-                    enabled = uiState.isModelLoaded
+                    enabled = canChat
                 )
             } else {
                 // No model loaded - show model selection
@@ -213,11 +228,12 @@ fun InferenceScreen(
                             tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
                         )
                         Text(
-                            "No model loaded",
+                            if (isMeshConnected) "Mesh Available" else "No model loaded",
                             style = MaterialTheme.typography.titleMedium
                         )
                         Text(
-                            "Download and load a model to start chatting",
+                            if (isMeshConnected) "No local model — connect to mesh for remote inference"
+                            else "Download and load a model to start chatting",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

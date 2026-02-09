@@ -189,6 +189,14 @@ class GossipManager private constructor(
     fun handleAnnouncement(sourceNodeId: String, announcement: JSONObject) {
         try {
             Log.i(TAG, "🔔 handleAnnouncement from $sourceNodeId, keys=${announcement.keys().asSequence().toList()}")
+            
+            // Check if this is a model_catalog message
+            val messageType = announcement.optString("type", "capability_announce")
+            if (messageType == "model_catalog") {
+                handleModelCatalog(sourceNodeId, announcement)
+                return
+            }
+            
             val timestamp = announcement.optLong("timestamp", System.currentTimeMillis())
             val sourceNodeName = announcement.optString("node_name", sourceNodeId)
             
@@ -375,6 +383,42 @@ class GossipManager private constructor(
             "node_name" to nodeName
         )
     }
+    
+    /**
+     * Handle model catalog message.
+     */
+    private fun handleModelCatalog(sourceNodeId: String, catalogMsg: JSONObject) {
+        try {
+            val nodeName = catalogMsg.optString("node_name", sourceNodeId)
+            Log.i(TAG, "📚 Received model_catalog from $nodeName")
+            
+            // Forward to ModelCatalog for processing
+            // This will be called from MeshCapabilityHandler which has access to ModelCatalog
+            scope.launch {
+                _modelCatalogUpdates.emit(catalogMsg to sourceNodeId)
+            }
+            
+            // Also check if there are any new models we should download
+            val modelsArray = catalogMsg.optJSONArray("models")
+            if (modelsArray != null) {
+                for (i in 0 until modelsArray.length()) {
+                    val modelJson = modelsArray.getJSONObject(i)
+                    val modelId = modelJson.optString("model_id", "")
+                    val version = modelJson.optString("version", "")
+                    
+                    // Trigger download check in VisionModelManager
+                    // (will be implemented in MeshCapabilityHandler)
+                    Log.d(TAG, "Model available: $modelId v$version from $nodeName")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling model catalog: ${e.message}", e)
+        }
+    }
+    
+    // Flow for model catalog updates
+    private val _modelCatalogUpdates = MutableSharedFlow<Pair<JSONObject, String>>()
+    val modelCatalogUpdates: SharedFlow<Pair<JSONObject, String>> = _modelCatalogUpdates.asSharedFlow()
     
     /**
      * Clear all capabilities (for testing/reset).

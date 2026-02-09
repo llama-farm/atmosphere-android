@@ -35,3 +35,9 @@ app/build/
 *.aab
 target/
 android/target/
+# Additional ignores
+llama.cpp/
+app/libs/*.aar
+*.onnx
+*.tflite
+*.gguf

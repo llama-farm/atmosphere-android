@@ -110,7 +110,7 @@ android {
     
     // Don't compress large model files - they're already compressed
     androidResources {
-        noCompress += listOf("gguf", "bin", "model")
+        noCompress += listOf("gguf", "bin", "model", "onnx")
     }
 
     sourceSets {
@@ -155,6 +155,9 @@ dependencies {
     // WorkManager for background processing
     implementation("androidx.work:work-runtime-ktx:2.9.0")
     
+    // DocumentFile for file/folder picking
+    implementation("androidx.documentfile:documentfile:1.0.1")
+    
     // CameraX for QR scanning
     val cameraxVersion = "1.3.1"
     implementation("androidx.camera:camera-core:$cameraxVersion")
@@ -167,6 +170,12 @@ dependencies {
     
     // OkHttp for WebSocket mesh connection
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    
+    // ONNX Runtime for vision models
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.1")
+    
+    // Gson for JSON parsing
+    implementation("com.google.code.gson:gson:2.10.1")
 
     // Testing
     testImplementation("junit:junit:4.13.2")

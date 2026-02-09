@@ -1,0 +1,25 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+  <group android:scaleX="0.6"
+      android:scaleY="0.6"
+      android:translateX="21.6"
+      android:translateY="21.6">
+    <!-- Chat bubble path -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M20,2C9,2 2,9 2,20C2,24 3.5,27.5 6,30.1L6,40L15.9,35C17.2,35.3 18.6,35.5 20,35.5C31,35.5 38,28.5 38,17.5C38,6.5 31,2 20,2ZM20,30C18.8,30 17.7,29.9 16.6,29.7L12,32L12,28.3C9.3,26.1 7.5,23.2 7.5,20C7.5,12 12.8,7.5 20,7.5C27.2,7.5 32.5,12 32.5,17.5C32.5,25 27.2,30 20,30Z"/>
+    <!-- Inner sparkles/dots to suggest AI/mesh -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M16,15m-2,0a2,2 0,1 1,4 0a2,2 0,1 1,-4 0"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M24,15m-2,0a2,2 0,1 1,4 0a2,2 0,1 1,-4 0"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M20,22m-2,0a2,2 0,1 1,4 0a2,2 0,1 1,-4 0"/>
+  </group>
+</vector>

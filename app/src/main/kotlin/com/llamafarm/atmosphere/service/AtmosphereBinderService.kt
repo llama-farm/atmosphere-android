@@ -13,6 +13,10 @@ import com.llamafarm.atmosphere.AtmosphereApplication
 import com.llamafarm.atmosphere.router.SemanticRouter
 import com.llamafarm.atmosphere.rag.LocalRagStore
 import com.llamafarm.atmosphere.inference.LocalInferenceEngine
+import com.llamafarm.atmosphere.llamafarm.LlamaFarmLite
+import com.llamafarm.atmosphere.vision.DetectionResult
+import com.llamafarm.atmosphere.vision.BoundingBox
+import com.llamafarm.atmosphere.vision.EscalationEnvelope
 import kotlinx.coroutines.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -194,6 +198,37 @@ class AtmosphereBinderService : Service() {
             } catch (e: Exception) {
                 Log.e(TAG, "chatCompletion() error", e)
                 errorJson("Chat completion failed: ${e.message}")
+            }
+        }
+        
+        override fun chatCompletionStream(
+            requestId: String?,
+            messagesJson: String?,
+            model: String?,
+            callback: IAtmosphereCallback?
+        ) {
+            Log.d(TAG, "chatCompletionStream() called: requestId=$requestId, model=$model")
+            recordClientActivity(capability = "chat_stream")
+            
+            if (requestId.isNullOrBlank() || messagesJson.isNullOrBlank() || callback == null) {
+                callback?.onStreamChunk(requestId ?: "unknown", errorJson("Invalid parameters"), true)
+                return
+            }
+            
+            // Launch streaming in background
+            serviceScope.launch {
+                try {
+                    // TODO: Implement actual streaming from mesh
+                    // For now, send a single chunk with error message
+                    callback.onStreamChunk(requestId, errorJson("Streaming not yet implemented"), true)
+                } catch (e: Exception) {
+                    Log.e(TAG, "chatCompletionStream() error", e)
+                    try {
+                        callback.onStreamChunk(requestId, errorJson("Stream failed: ${e.message}"), true)
+                    } catch (cbError: Exception) {
+                        Log.e(TAG, "Failed to send error chunk", cbError)
+                    }
+                }
             }
         }
         
@@ -612,6 +647,296 @@ class AtmosphereBinderService : Service() {
             } catch (e: Exception) {
                 Log.e(TAG, "listRagIndexes() error", e)
                 errorJson("List failed: ${e.message}")
+            }
+        }
+        
+        // ========================== Vision and LlamaFarm API Implementation ==========================
+        
+        override fun addRagDocument(namespace: String?, docId: String?, content: String?, metadata: String?): Boolean {
+            Log.d(TAG, "addRagDocument() called: namespace=$namespace, docId=$docId")
+            recordClientActivity(capability = "rag", ragQuery = false)
+            
+            if (namespace.isNullOrBlank() || docId.isNullOrBlank() || content.isNullOrBlank()) {
+                Log.w(TAG, "Invalid parameters for addRagDocument")
+                return false
+            }
+            
+            return try {
+                // Create or update index with single document
+                runBlocking {
+                    val existingIndex = ragStore.getIndex(namespace)
+                    if (existingIndex != null) {
+                        // Add to existing index
+                        ragStore.createIndex(
+                            namespace,
+                            existingIndex.documents.map { it.id to it.content } + (docId to content)
+                        )
+                    } else {
+                        // Create new index
+                        ragStore.createIndex(namespace, listOf(docId to content))
+                    }
+                }
+                Log.i(TAG, "Added RAG document: $namespace/$docId")
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to add RAG document", e)
+                false
+            }
+        }
+        
+        override fun detectObjects(imageBase64: String?, sourceId: String?): String {
+            Log.d(TAG, "detectObjects() called: sourceId=$sourceId")
+            recordClientActivity(capability = "vision")
+            
+            if (imageBase64.isNullOrBlank()) {
+                return errorJson("Image data required")
+            }
+            
+            return try {
+                // Decode base64 image
+                val imageBytes = android.util.Base64.decode(imageBase64, android.util.Base64.NO_WRAP)
+                
+                // Get LlamaFarmLite instance
+                val app = applicationContext as? AtmosphereApplication
+                val cameraCapability = app?.cameraCapability
+                
+                if (cameraCapability == null) {
+                    return errorJson("Camera capability not available")
+                }
+                
+                val llamaFarm = LlamaFarmLite.getInstance(applicationContext, cameraCapability)
+                
+                // Run detection
+                val result = runBlocking {
+                    llamaFarm.detectObjects(imageBytes, sourceId ?: "api")
+                }
+                
+                if (result != null) {
+                    // Return in format SDK expects: { detections: [...], model, inference_time_ms }
+                    val detectionsArray = org.json.JSONArray()
+                    detectionsArray.put(JSONObject().apply {
+                        put("class_name", result.className)
+                        put("confidence", result.confidence)
+                        put("bbox", org.json.JSONArray().apply {
+                            put(result.bbox.x1.toDouble())
+                            put(result.bbox.y1.toDouble())
+                            put(result.bbox.x2.toDouble())
+                            put(result.bbox.y2.toDouble())
+                        })
+                        put("inference_time_ms", result.inferenceTimeMs)
+                    })
+                    JSONObject().apply {
+                        put("success", true)
+                        put("detections", detectionsArray)
+                        put("model", "general_coco")
+                        put("inference_time_ms", result.inferenceTimeMs)
+                        put("escalated", false)
+                        put("node_id", "local")
+                    }.toString()
+                } else {
+                    errorJson("Detection failed - vision not ready or no objects detected")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "detectObjects() error", e)
+                errorJson("Detection failed: ${e.message}")
+            }
+        }
+        
+        override fun captureAndDetect(facing: String?): String {
+            Log.d(TAG, "captureAndDetect() called: facing=$facing")
+            recordClientActivity(capability = "vision")
+            
+            return try {
+                // Get LlamaFarmLite instance
+                val app = applicationContext as? AtmosphereApplication
+                val cameraCapability = app?.cameraCapability
+                
+                if (cameraCapability == null) {
+                    return errorJson("Camera capability not available")
+                }
+                
+                val llamaFarm = LlamaFarmLite.getInstance(applicationContext, cameraCapability)
+                
+                // Parse camera facing
+                val cameraFacing = when (facing?.lowercase()) {
+                    "front" -> com.llamafarm.atmosphere.capabilities.CameraFacing.FRONT
+                    else -> com.llamafarm.atmosphere.capabilities.CameraFacing.BACK
+                }
+                
+                // Capture and detect
+                val result = runBlocking {
+                    llamaFarm.captureAndDetect(cameraFacing)
+                }
+                
+                if (result != null) {
+                    JSONObject().apply {
+                        put("success", true)
+                        put("className", result.className)
+                        put("confidence", result.confidence)
+                        put("bbox", JSONObject().apply {
+                            put("x1", result.bbox.x1)
+                            put("y1", result.bbox.y1)
+                            put("x2", result.bbox.x2)
+                            put("y2", result.bbox.y2)
+                        })
+                        put("inferenceTimeMs", result.inferenceTimeMs)
+                        put("facing", facing ?: "back")
+                    }.toString()
+                } else {
+                    errorJson("Camera capture or detection failed")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "captureAndDetect() error", e)
+                errorJson("Capture and detect failed: ${e.message}")
+            }
+        }
+        
+        override fun getVisionCapability(): String {
+            Log.d(TAG, "getVisionCapability() called")
+            
+            return try {
+                val app = applicationContext as? AtmosphereApplication
+                val cameraCapability = app?.cameraCapability
+                
+                if (cameraCapability == null) {
+                    return JSONObject().apply {
+                        put("available", false)
+                        put("message", "Camera capability not initialized")
+                    }.toString()
+                }
+                
+                val llamaFarm = LlamaFarmLite.getInstance(applicationContext, cameraCapability)
+                val visionManager = com.llamafarm.atmosphere.vision.VisionModelManager(applicationContext)
+                
+                val installedModels = visionManager.installedModels.value
+                val activeModel = visionManager.activeModel.value
+                
+                JSONObject().apply {
+                    put("available", llamaFarm.isVisionReady())
+                    put("ready", llamaFarm.isVisionReady())
+                    put("installedModels", JSONArray().apply {
+                        installedModels.forEach { model ->
+                            put(JSONObject().apply {
+                                put("modelId", model.modelId)
+                                put("version", model.version)
+                                put("baseModel", model.baseModel)
+                                put("inputSize", model.inputSize)
+                                put("numClasses", model.classMap.size)
+                            })
+                        }
+                    })
+                    put("activeModel", if (activeModel != null) {
+                        JSONObject().apply {
+                            put("modelId", activeModel.modelId)
+                            put("version", activeModel.version)
+                            put("baseModel", activeModel.baseModel)
+                            put("inputSize", activeModel.inputSize)
+                            put("numClasses", activeModel.classMap.size)
+                        }
+                    } else {
+                        null
+                    })
+                    put("supportedFormats", JSONArray().apply {
+                        put("jpeg")
+                        put("png")
+                    })
+                }.toString()
+            } catch (e: Exception) {
+                Log.e(TAG, "getVisionCapability() error", e)
+                errorJson("Failed to get vision capability: ${e.message}")
+            }
+        }
+        
+        override fun setVisionConfidenceThreshold(threshold: Float) {
+            Log.d(TAG, "setVisionConfidenceThreshold() called: threshold=$threshold")
+            
+            try {
+                val app = applicationContext as? AtmosphereApplication
+                val cameraCapability = app?.cameraCapability
+                
+                if (cameraCapability != null) {
+                    val llamaFarm = LlamaFarmLite.getInstance(applicationContext, cameraCapability)
+                    llamaFarm.setVisionConfidenceThreshold(threshold)
+                    Log.i(TAG, "Vision confidence threshold set to: $threshold")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to set confidence threshold", e)
+            }
+        }
+        
+        override fun sendVisionFeedback(feedbackJson: String?): String {
+            Log.d(TAG, "sendVisionFeedback() called: feedbackJson=$feedbackJson")
+            
+            if (feedbackJson == null) {
+                return errorJson("Feedback JSON cannot be null")
+            }
+            
+            return try {
+                val feedback = JSONObject(feedbackJson)
+                
+                // Log the feedback for now - could extend VisionCapability to support training
+                Log.i(TAG, "📝 Vision feedback received: $feedbackJson")
+                
+                // Store feedback in app state for later batch training
+                // For now, just return success
+                JSONObject().apply {
+                    put("success", true)
+                    put("message", "Feedback received")
+                }.toString()
+            } catch (e: Exception) {
+                Log.e(TAG, "sendVisionFeedback() error", e)
+                errorJson("Failed to process vision feedback: ${e.message}")
+            }
+        }
+        
+        override fun getLlamaFarmCapabilities(): String {
+            Log.d(TAG, "getLlamaFarmCapabilities() called")
+            
+            return try {
+                val app = applicationContext as? AtmosphereApplication
+                val cameraCapability = app?.cameraCapability
+                
+                if (cameraCapability == null) {
+                    return JSONObject().apply {
+                        put("llm", JSONObject().apply { put("available", false) })
+                        put("rag", JSONObject().apply { put("available", true) })
+                        put("vision", JSONObject().apply { put("available", false) })
+                    }.toString()
+                }
+                
+                val llamaFarm = LlamaFarmLite.getInstance(applicationContext, cameraCapability)
+                val capabilities = llamaFarm.getCapabilityInfo()
+                
+                capabilities.toString()
+            } catch (e: Exception) {
+                Log.e(TAG, "getLlamaFarmCapabilities() error", e)
+                errorJson("Failed to get capabilities: ${e.message}")
+            }
+        }
+        
+        override fun isLlmReady(): Boolean {
+            return try {
+                val app = applicationContext as? AtmosphereApplication
+                val cameraCapability = app?.cameraCapability ?: return false
+                
+                val llamaFarm = LlamaFarmLite.getInstance(applicationContext, cameraCapability)
+                llamaFarm.isLlmReady()
+            } catch (e: Exception) {
+                Log.e(TAG, "isLlmReady() error", e)
+                false
+            }
+        }
+        
+        override fun isVisionReady(): Boolean {
+            return try {
+                val app = applicationContext as? AtmosphereApplication
+                val cameraCapability = app?.cameraCapability ?: return false
+                
+                val llamaFarm = LlamaFarmLite.getInstance(applicationContext, cameraCapability)
+                llamaFarm.isVisionReady()
+            } catch (e: Exception) {
+                Log.e(TAG, "isVisionReady() error", e)
+                false
             }
         }
     }

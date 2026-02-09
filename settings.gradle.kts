@@ -28,3 +28,4 @@ rootProject.name = "Atmosphere"
 include(":app")
 include(":atmosphere-sdk")
 include(":atmosphere-client")
+include(":atmosphere-photo")

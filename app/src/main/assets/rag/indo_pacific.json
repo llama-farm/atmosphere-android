@@ -1,0 +1,58 @@
+[
+  {
+    "category": "Snake",
+    "name": "King Cobra",
+    "scientific_name": "Ophiophagus hannah",
+    "description": "The world's longest venomous snake. Found in forests from India through Southeast Asia. Avoids humans but aggressive if cornered. Venom is neurotoxic and cardiotoxic.",
+    "symptoms": "Severe pain, blurred vision, vertigo, drowsiness, paralysis. Death can occur within 30 minutes due to respiratory failure.",
+    "treatment": "Immediate medical attention. Pressure immobilization bandage. Antivenom is essential."
+  },
+  {
+    "category": "Snake",
+    "name": "Banded Krait",
+    "scientific_name": "Bungarus fasciatus",
+    "description": "Easily identified by alternate black and yellow bands. Nocturnal and shy. Venom is neurotoxic.",
+    "symptoms": "Minimal local pain, but progressive paralysis, respiratory failure. 'Sleeping sickness' where victims don't wake up.",
+    "treatment": "Antivenom. Mechanical ventilation may be required."
+  },
+  {
+    "category": "Snake",
+    "name": "Russell's Viper",
+    "scientific_name": "Daboia russelii",
+    "description": "Responsible for most snakebite incidents in India/SE Asia. Loud hissing warning. Hemotoxic venom.",
+    "symptoms": "Pain, swelling, bleeding from gums/urine, kidney failure, necrosis.",
+    "treatment": "Polyvalent antivenom. Dialysis for kidney failure."
+  },
+  {
+    "category": "Spider",
+    "name": "Cobalt Blue Tarantula",
+    "scientific_name": "Cyriopagopus lividus",
+    "description": "Striking blue legs. Fast and aggressive. Lives in burrows in Thailand/Myanmar.",
+    "symptoms": "Severe pain, muscle cramping, inflammation. Not usually fatal to healthy adults but debilitating.",
+    "treatment": "Pain management, muscle relaxants. Clean wound to prevent infection."
+  },
+  {
+    "category": "Plant",
+    "name": "Rosary Pea",
+    "scientific_name": "Abrus precatorius",
+    "description": "Vine with attractive red and black seeds. Seeds contain abrin, one of the most toxic substances known.",
+    "symptoms": "If chewed: nausea, vomiting, convulsions, liver failure, death. Swallowed whole seeds may pass harmlessly.",
+    "treatment": "Supportive care. No specific antidote."
+  },
+  {
+    "category": "Plant",
+    "name": "Suicide Tree",
+    "scientific_name": "Cerbera odollam",
+    "description": "Fruit looks like a mango. Kernels contain cerberin, a cardiac glycoside.",
+    "symptoms": "Irregular heartbeat, fatal arrhythmia.",
+    "treatment": "Similar to digoxin poisoning. Atropine, monitoring."
+  },
+  {
+    "category": "Plant",
+    "name": "Stinging Tree",
+    "scientific_name": "Dendrocnide moroides",
+    "description": "Found in Australia/Indonesia rainforests. Covered in silicon-tipped hairs containing neurotoxin.",
+    "symptoms": "Excruciating pain lasting days to months. 'Like being burnt with hot acid and electrocuted at the same time'.",
+    "treatment": "Do not rub. Remove hairs with wax strip. Diluted hydrochloric acid soak (medical supervision)."
+  }
+]

@@ -164,26 +164,9 @@ class LlamaCppEngine private constructor(
     private var armEngine: com.arm.aichat.InferenceEngine? = null
     
     init {
-        // Try to load our direct JNI library first
-        try {
-            System.loadLibrary("llama-jni")
-            val nativeLibDir = context.applicationInfo.nativeLibraryDir
-            val result = nativeInit(nativeLibDir)
-            if (result == 0) {
-                nativeLoaded = true
-                _state.value = State.Initialized
-                Log.i(TAG, "Direct llama.cpp JNI initialized from $nativeLibDir")
-                Log.i(TAG, "System info: ${nativeGetSystemInfo()}")
-            } else {
-                throw RuntimeException("Native init failed with code: $result")
-            }
-        } catch (e: UnsatisfiedLinkError) {
-            Log.w(TAG, "Direct JNI not available, trying ARM AiChat fallback: ${e.message}")
-            tryArmFallback()
-        } catch (e: Exception) {
-            Log.w(TAG, "Direct JNI init failed, trying ARM AiChat fallback: ${e.message}")
-            tryArmFallback()
-        }
+        // Use ARM AiChat engine directly (libllama-jni doesn't exist, and ARM AiChat works!)
+        Log.i(TAG, "Initializing with ARM AiChat engine")
+        tryArmFallback()
     }
     
     private fun tryArmFallback() {
@@ -192,9 +175,10 @@ class LlamaCppEngine private constructor(
             useArmFallback = true
             nativeLoaded = true
             _state.value = State.Initialized
-            Log.i(TAG, "Using ARM AiChat fallback engine")
+            Log.i(TAG, "ARM AiChat engine initialized successfully")
+            Log.i(TAG, "Supports Granite, Llama, and other common architectures")
         } catch (e: Exception) {
-            Log.e(TAG, "ARM AiChat fallback also failed: ${e.message}")
+            Log.e(TAG, "Failed to initialize ARM AiChat engine: ${e.message}")
             nativeLoaded = false
             _state.value = State.Error(e)
         }

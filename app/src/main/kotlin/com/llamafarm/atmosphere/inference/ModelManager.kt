@@ -22,32 +22,27 @@ class ModelManager(private val context: Context) {
         private const val MODELS_DIR = "models"
         private const val CHUNK_SIZE = 8192
         
-        // Default model configuration
-        // NOTE: To use Llama, download Llama-3.2-1B-Instruct-Q4_K_M.gguf from HuggingFace
-        // and place in app/src/main/assets/models/, then uncomment below:
-        /*
+        // Default model: IBM Granite (supported by ARM AiChat/llama.cpp)
         val DEFAULT_MODEL = ModelConfig(
-            id = "llama-3.2-1b-q4km",
-            name = "Llama 3.2 1B Instruct Q4_K_M",
-            huggingFaceRepo = "lmstudio-community/Llama-3.2-1B-Instruct-GGUF",
-            fileName = "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
-            sizeBytes = 800_000_000L, // ~800MB
-            description = "Meta's Llama 3.2 1B instruction-tuned model"
-        )
-        */
-        // Current: Qwen3 (keep until Llama file is downloaded)
-        val DEFAULT_MODEL = ModelConfig(
-            id = "qwen3-1.7b-q4km",
-            name = "Qwen3 1.7B Q4_K_M",
-            huggingFaceRepo = "unsloth/Qwen3-1.7B-GGUF",
-            fileName = "Qwen3-1.7B-Q4_K_M.gguf",
-            sizeBytes = 1_100_000_000L, // ~1.1GB
-            description = "Fast, efficient 1.7B parameter model optimized for mobile"
+            id = "granite-3.1-1b-q4km",
+            name = "Granite 3.1 1B Instruct Q4_K_M",
+            huggingFaceRepo = "ibm-granite/granite-3.1-1b-a400m-instruct-GGUF",
+            fileName = "granite-3.1-1b-a400m-instruct.Q4_K_M.gguf",
+            sizeBytes = 300_000_000L, // ~300MB
+            description = "IBM Granite 3.1 1B - tiny, fast, supported by ARM AiChat"
         )
         
-        // Available models
+        // Available models (all supported by ARM AiChat/llama.cpp)
         val AVAILABLE_MODELS = listOf(
             DEFAULT_MODEL,
+            ModelConfig(
+                id = "granite-3.1-2b-q4km",
+                name = "Granite 3.1 2B Instruct Q4_K_M",
+                huggingFaceRepo = "ibm-granite/granite-3.1-2b-instruct-GGUF",
+                fileName = "granite-3.1-2b-instruct.Q4_K_M.gguf",
+                sizeBytes = 1_300_000_000L, // ~1.3GB
+                description = "IBM Granite 3.1 2B - balanced quality and speed"
+            ),
             ModelConfig(
                 id = "llama-3.2-1b-q4km",
                 name = "Llama 3.2 1B Instruct Q4_K_M",
@@ -63,22 +58,6 @@ class ModelManager(private val context: Context) {
                 fileName = "Llama-3.2-3B-Instruct-Q4_K_M.gguf",
                 sizeBytes = 2_000_000_000L, // ~2GB
                 description = "Meta's Llama 3.2 3B instruction-tuned model"
-            ),
-            ModelConfig(
-                id = "qwen3-0.6b-q4km",
-                name = "Qwen3 0.6B Q4_K_M",
-                huggingFaceRepo = "unsloth/Qwen3-0.6B-GGUF",
-                fileName = "Qwen3-0.6B-Q4_K_M.gguf",
-                sizeBytes = 450_000_000L, // ~450MB
-                description = "Ultra-light model for basic tasks"
-            ),
-            ModelConfig(
-                id = "qwen3-4b-q4km",
-                name = "Qwen3 4B Q4_K_M",
-                huggingFaceRepo = "unsloth/Qwen3-4B-GGUF",
-                fileName = "Qwen3-4B-Q4_K_M.gguf",
-                sizeBytes = 2_600_000_000L, // ~2.6GB
-                description = "Higher quality model for complex reasoning"
             )
         )
     }

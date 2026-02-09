@@ -14,3 +14,13 @@ name = "atmosphere_android"
 atmosphere-core = { path = "../core" }
 serde_json.workspace = true
 uuid.workspace = true
+
+# Networking dependencies (using rustls to avoid OpenSSL cross-compile issues)
+tungstenite = { version = "0.21", default-features = false, features = ["handshake", "rustls-tls-native-roots"] }
+url = "2"
+rustls = "0.21"
+parking_lot = "0.12"
+
+# Async runtime (minimal for Android)
+tokio = { version = "1.40", features = ["rt", "sync", "time", "net"] }
+futures-util = "0.3"

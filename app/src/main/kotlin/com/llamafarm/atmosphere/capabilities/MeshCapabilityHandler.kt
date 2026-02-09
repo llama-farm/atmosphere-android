@@ -3,6 +3,9 @@ package com.llamafarm.atmosphere.capabilities
 import android.content.Context
 import android.util.Log
 import com.llamafarm.atmosphere.network.MeshConnection
+import com.llamafarm.atmosphere.mesh.ModelCatalog
+import com.llamafarm.atmosphere.vision.VisionModelManager
+import com.llamafarm.atmosphere.core.GossipManager
 // import com.llamafarm.atmosphere.network.MeshMessage // TODO: Update to new message format
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,9 +37,15 @@ class MeshCapabilityHandler(
     // Local capabilities
     private var voiceCapability: VoiceCapability? = null
     private var cameraCapability: CameraCapability? = null
+    private var visionCapability: com.llamafarm.atmosphere.vision.VisionCapability? = null
     
     // Mesh connection for sending/receiving
     private var meshConnection: MeshConnection? = null
+    
+    // Model catalog and transfer
+    private val modelCatalog = ModelCatalog()
+    private var visionModelManager: VisionModelManager? = null
+    private var gossipManager: GossipManager? = null
     
     // Registered capabilities
     private val localCapabilities = mutableMapOf<String, CapabilityInfo>()
@@ -53,6 +62,13 @@ class MeshCapabilityHandler(
         // Initialize capabilities
         voiceCapability = VoiceCapability(context)
         cameraCapability = CameraCapability(context)
+        
+        // Initialize vision capability (requires camera)
+        visionCapability = com.llamafarm.atmosphere.vision.VisionCapability(
+            context = context,
+            nodeId = nodeId,
+            cameraCapability = cameraCapability!!
+        )
         
         // Register local capabilities
         registerLocalCapabilities()
@@ -106,6 +122,33 @@ class MeshCapabilityHandler(
             Log.i(TAG, "Registered capability: camera_capture")
         }
         
+        // Vision Detection
+        if (visionCapability?.isReady?.value == true) {
+            localCapabilities["vision_detect"] = CapabilityInfo(
+                name = "vision_detect",
+                description = "Object detection with on-device AI",
+                params = mapOf(
+                    "image_base64" to "Base64-encoded image",
+                    "confidence_threshold" to "Minimum confidence (0.0-1.0)"
+                ),
+                requiresApproval = false
+            )
+            Log.i(TAG, "Registered capability: vision_detect")
+        }
+        
+        // Vision Classification
+        if (visionCapability?.isReady?.value == true) {
+            localCapabilities["vision_classify"] = CapabilityInfo(
+                name = "vision_classify",
+                description = "Image classification with on-device AI",
+                params = mapOf(
+                    "image_base64" to "Base64-encoded image"
+                ),
+                requiresApproval = false
+            )
+            Log.i(TAG, "Registered capability: vision_classify")
+        }
+        
         Log.i(TAG, "Registered ${localCapabilities.size} local capabilities")
     }
     
@@ -115,9 +158,109 @@ class MeshCapabilityHandler(
     fun setMeshConnection(connection: MeshConnection) {
         meshConnection = connection
         
+        // Configure vision capability mesh sender
+        visionCapability?.setMeshSender { message ->
+            scope.launch {
+                try {
+                    connection.sendMessage(message)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to send vision message", e)
+                }
+            }
+        }
+        
         // Announce capabilities to mesh
         announceCapabilities()
     }
+    
+    /**
+     * Set the GossipManager for listening to model catalog updates.
+     */
+    fun setGossipManager(manager: GossipManager) {
+        gossipManager = manager
+        
+        // Listen for model catalog updates
+        scope.launch {
+            manager.modelCatalogUpdates.collect { (catalogJson, sourceNodeId) ->
+                val nodeName = catalogJson.optString("node_name", sourceNodeId)
+                modelCatalog.processCatalogMessage(sourceNodeId, nodeName, catalogJson)
+                
+                // Check for new model versions
+                checkForModelUpdates()
+            }
+        }
+    }
+    
+    /**
+     * Set the VisionModelManager for auto-updating models.
+     */
+    fun setVisionModelManager(manager: VisionModelManager) {
+        visionModelManager = manager
+        
+        // Register vision model capabilities when models are loaded
+        // (will update announcements when new models are available)
+    }
+    
+    /**
+     * Check for model updates and trigger downloads if needed.
+     */
+    private fun checkForModelUpdates() {
+        val manager = visionModelManager ?: return
+        
+        scope.launch {
+            try {
+                // Get vision models from catalog
+                val visionModels = modelCatalog.getModelsByType(com.llamafarm.atmosphere.mesh.ModelType.VISION)
+                
+                for (model in visionModels) {
+                    // Check if we have this model locally
+                    val localMetadata = manager.getModelMetadata(model.modelId, model.version)
+                    val localVersion = localMetadata?.version
+                    
+                    if (localVersion == null || isNewerVersion(model.version, localVersion)) {
+                        Log.i(TAG, "New model version available: ${model.modelId} v${model.version} (local: $localVersion)")
+                        
+                        // Auto-queue download
+                        val bestPeer = model.getBestPeer()
+                        if (bestPeer != null) {
+                            Log.i(TAG, "Queueing download from ${bestPeer.nodeName} via ${bestPeer.httpEndpoint ?: "websocket"}")
+                            // TODO: Trigger download via ModelTransferService
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error checking for model updates: ${e.message}", e)
+            }
+        }
+    }
+    
+    /**
+     * Compare version strings (simple semantic versioning).
+     */
+    private fun isNewerVersion(newVersion: String, currentVersion: String): Boolean {
+        try {
+            val newParts = newVersion.split(".").map { it.toIntOrNull() ?: 0 }
+            val currentParts = currentVersion.split(".").map { it.toIntOrNull() ?: 0 }
+            
+            for (i in 0 until maxOf(newParts.size, currentParts.size)) {
+                val newPart = newParts.getOrNull(i) ?: 0
+                val currentPart = currentParts.getOrNull(i) ?: 0
+                
+                if (newPart > currentPart) return true
+                if (newPart < currentPart) return false
+            }
+            
+            return false
+        } catch (e: Exception) {
+            // Fall back to string comparison
+            return newVersion > currentVersion
+        }
+    }
+    
+    /**
+     * Get the model catalog.
+     */
+    fun getModelCatalog(): ModelCatalog = modelCatalog
     
     /**
      * Clear the mesh connection.
@@ -146,12 +289,29 @@ class MeshCapabilityHandler(
                     })
                 }
             })
+            
+            // Add vision model capabilities
+            val visionManager = visionModelManager
+            if (visionManager != null) {
+                val loadedModels = visionManager.installedModels.value
+                if (loadedModels.isNotEmpty()) {
+                    put("vision_models", JSONArray().apply {
+                        loadedModels.forEach { modelMetadata ->
+                            put(JSONObject().apply {
+                                put("model_id", modelMetadata.modelId)
+                                put("version", modelMetadata.version)
+                                put("loaded", true)
+                            })
+                        }
+                    })
+                }
+            }
         }
         
         scope.launch {
             try {
                 connection.sendMessage(announcement)
-                Log.i(TAG, "Announced ${localCapabilities.size} capabilities to mesh")
+                Log.i(TAG, "Announced ${localCapabilities.size} capabilities + vision models to mesh")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to announce capabilities", e)
             }
@@ -179,6 +339,7 @@ class MeshCapabilityHandler(
             "speech_to_text" -> handleSttRequest(requestId, params, requesterId)
             "text_to_speech" -> handleTtsRequest(requestId, params)
             "camera_capture" -> handleCameraRequest(requestId, params, requesterId)
+            "vision_detect", "vision_classify" -> handleVisionRequest(requestId, params)
             "voice" -> {
                 // Combined voice capability - determine STT or TTS from params
                 if (params.has("text")) {
@@ -247,6 +408,24 @@ class MeshCapabilityHandler(
     }
     
     /**
+     * Handle Vision detection/classification request.
+     */
+    private suspend fun handleVisionRequest(
+        requestId: String,
+        params: JSONObject
+    ): JSONObject {
+        val vision = visionCapability ?: return errorResponse("Vision not available", requestId)
+        
+        if (vision.isReady.value != true) {
+            return errorResponse("Vision model not loaded", requestId)
+        }
+        
+        return vision.handleVisionRequest(params.apply {
+            put("request_id", requestId)
+        })
+    }
+    
+    /**
      * Create error response JSON.
      */
     private fun errorResponse(message: String, requestId: String? = null): JSONObject {
@@ -298,6 +477,7 @@ class MeshCapabilityHandler(
     fun destroy() {
         voiceCapability?.destroy()
         cameraCapability?.destroy()
+        visionCapability?.destroy()
         meshConnection = null
         localCapabilities.clear()
     }

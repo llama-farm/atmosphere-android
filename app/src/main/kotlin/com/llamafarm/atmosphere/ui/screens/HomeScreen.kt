@@ -158,18 +158,14 @@ fun HomeScreen(viewModel: AtmosphereViewModel) {
             Spacer(modifier = Modifier.height(16.dp))
         }
 
-        // Quick Stats Row - Compute directly in composition to ensure recomposition
-        val peerCount = relayPeers.size.coerceAtLeast(nodeState.connectedPeers).also {
-            Log.d("HomeScreen", "📊 peerCount: $it (relayPeers=${relayPeers.size}, nodeState=${nodeState.connectedPeers})")
-        }
-        val capabilityCount = ((gossipStats["total_capabilities"] as? Number)?.toInt() ?: 0).also {
-            Log.d("HomeScreen", "📊 capabilityCount: $it from gossipStats keys=${gossipStats.keys}")
-        }
+        // Quick Stats Row - Direct from state (simplified extraction)
+        val peerCount = maxOf(relayPeers.size, nodeState.connectedPeers)
         
-        // 📊 Debug log for stats
-        LaunchedEffect(peerCount, capabilityCount, relayPeers.size, gossipStats) {
-            android.util.Log.i("HomeScreen", "📊 Stats LaunchedEffect: $peerCount peers, $capabilityCount capabilities, gossipStats size=${gossipStats.size}")
-        }
+        // Simplified capability extraction - directly cast to Int
+        val capabilityCount = (gossipStats["total_capabilities"] as? Int) ?: 0
+        
+        // Force log on every recomposition to debug
+        Log.d("HomeScreen", "📊 StatCards render: peers=$peerCount, caps=$capabilityCount (relay=${relayPeers.size}, node=${nodeState.connectedPeers}, stats=${gossipStats["total_capabilities"]})")
         
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -221,65 +217,64 @@ fun HomeScreen(viewModel: AtmosphereViewModel) {
         
         Spacer(modifier = Modifier.height(8.dp))
         
-        // Peer list (if any) - Force recomposition with key
-        key(relayPeers.size, relayPeers.hashCode()) {
-            if (relayPeers.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        text = "📡 ${relayPeers.size} Relay Peers",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 4.dp)
-                    )
-                    relayPeers.forEach { peer ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 8.dp, vertical = 2.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                Icons.Default.Computer,
-                                contentDescription = null,
-                                tint = Color(0xFF4CAF50),
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Spacer(Modifier.width(8.dp))
+        // Peer list (if any) - Simple direct rendering
+        if (relayPeers.isNotEmpty()) {
+            Log.d("HomeScreen", "📡 Rendering peer list: ${relayPeers.size} peers")
+            Spacer(modifier = Modifier.height(8.dp))
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "📡 ${relayPeers.size} Relay Peers",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 4.dp)
+                )
+                relayPeers.forEach { peer ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Computer,
+                            contentDescription = null,
+                            tint = Color(0xFF4CAF50),
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = peer.name,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = peer.nodeId.take(8) + "...",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (peer.capabilities.isNotEmpty()) {
+                            Spacer(Modifier.weight(1f))
                             Text(
-                                text = peer.name,
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = peer.nodeId.take(8) + "...",
+                                text = "${peer.capabilities.size} caps",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = Color(0xFF9C27B0)
                             )
-                            if (peer.capabilities.isNotEmpty()) {
-                                Spacer(Modifier.weight(1f))
-                                Text(
-                                    text = "${peer.capabilities.size} caps",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color(0xFF9C27B0)
-                                )
-                            }
                         }
                     }
                 }
-            } else {
-                // Show debug info when no peers but we expect some
-                if (isConnected) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "🔍 Connected to mesh but no relay peers yet (expecting data...)",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 8.dp)
-                    )
-                }
+            }
+        } else {
+            // Show debug info when no peers but we expect some
+            if (isConnected) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "🔍 Connected to mesh but no relay peers yet (expecting data...)",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                )
             }
         }
         
@@ -685,8 +680,7 @@ private fun MeshEventsFeed(
                 Column(
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    events.take(50).forEachIndexed { index, event ->
-                        Log.d("HomeScreen", "📡 Rendering event $index: ${event.title}")
+                    events.take(50).forEach { event ->
                         MeshEventRow(event)
                     }
                 }

@@ -15,10 +15,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -70,6 +72,8 @@ sealed class Screen(val route: String, val title: String, val icon: ImageVector?
     data object JoinMesh : Screen("join_mesh", "Join Mesh", null)
     data object TransportSettings : Screen("transport_settings", "Transport Settings", null)
     data object Pairing : Screen("pairing", "Pairing", null)
+    data object RAG : Screen("rag", "RAG", Icons.Default.Search)
+    data object VisionTest : Screen("vision_test", "Vision", Icons.Default.CameraAlt)
 }
 
 /**
@@ -88,6 +92,8 @@ class MainActivity : ComponentActivity() {
     private val screens = listOf(
         Screen.Home,
         Screen.Inference,
+        Screen.RAG,
+        Screen.VisionTest,
         Screen.Mesh,
         Screen.ConnectedApps,
         Screen.Test,
@@ -512,7 +518,17 @@ fun AtmosphereApp(screens: List<Screen>, initialDeepLink: DeepLinkData? = null) 
             modifier = Modifier.padding(innerPadding)
         ) {
             composable(Screen.Home.route) { HomeScreen(viewModel) }
-            composable(Screen.Inference.route) { InferenceScreen() }
+            composable(Screen.Inference.route) { 
+                val isConnected by viewModel.isConnectedToMesh.collectAsState()
+                InferenceScreen(
+                    isMeshConnected = isConnected,
+                    onMeshInference = { prompt, callback ->
+                        viewModel.sendUserMessage(prompt) { response, error ->
+                            callback(response, error)
+                        }
+                    }
+                )
+            }
             composable(Screen.Mesh.route) { 
                 MeshScreen(
                     viewModel = viewModel,
@@ -573,6 +589,26 @@ fun AtmosphereApp(screens: List<Screen>, initialDeepLink: DeepLinkData? = null) 
                     onBack = {
                         navController.popBackStack()
                     }
+                )
+            }
+            composable(Screen.RAG.route) {
+                val context = androidx.compose.ui.platform.LocalContext.current
+                val cameraCapability = com.llamafarm.atmosphere.capabilities.CameraCapability(context.applicationContext)
+                val llamaFarmLite = com.llamafarm.atmosphere.llamafarm.LlamaFarmLite.getInstance(context.applicationContext, cameraCapability)
+                com.llamafarm.atmosphere.ui.screens.RagScreen(
+                    llamaFarmLite = llamaFarmLite,
+                    appId = context.packageName
+                )
+            }
+            composable(Screen.VisionTest.route) {
+                val context = androidx.compose.ui.platform.LocalContext.current
+                val visionModelManager = remember { com.llamafarm.atmosphere.vision.VisionModelManager(context.applicationContext) }
+                val cameraCapability = com.llamafarm.atmosphere.capabilities.CameraCapability(context.applicationContext)
+                val visionCapability = remember { com.llamafarm.atmosphere.vision.VisionCapability(context.applicationContext, "local", cameraCapability, visionModelManager) }
+                com.llamafarm.atmosphere.ui.screens.VisionScreen(
+                    visionCapability = visionCapability,
+                    modelManager = visionModelManager,
+                    onBack = { navController.popBackStack() }
                 )
             }
         }

@@ -22,7 +22,10 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ModelsScreen(viewModel: ModelsViewModel) {
+fun ModelsScreen(
+    viewModel: ModelsViewModel,
+    meshModels: List<com.llamafarm.atmosphere.mesh.ModelCatalogEntry> = emptyList()
+) {
     val scope = rememberCoroutineScope()
     
     // Collect state
@@ -68,12 +71,18 @@ fun ModelsScreen(viewModel: ModelsViewModel) {
             Tab(
                 selected = selectedTab == 0,
                 onClick = { selectedTab = 0 },
-                text = { Text("Models") },
+                text = { Text("Local") },
                 icon = { Icon(Icons.Default.Memory, contentDescription = null) }
             )
             Tab(
                 selected = selectedTab == 1,
                 onClick = { selectedTab = 1 },
+                text = { Text("Mesh") },
+                icon = { Icon(Icons.Default.Cloud, contentDescription = null) }
+            )
+            Tab(
+                selected = selectedTab == 2,
+                onClick = { selectedTab = 2 },
                 text = { Text("Personas") },
                 icon = { Icon(Icons.Default.Person, contentDescription = null) }
             )
@@ -92,7 +101,15 @@ fun ModelsScreen(viewModel: ModelsViewModel) {
                 onCancelDownload = { viewModel.cancelDownload() },
                 onAddModel = { showAddModelDialog = true }
             )
-            1 -> PersonasTab(
+            1 -> MeshModelsTab(
+                meshModels = meshModels,
+                onDownloadModel = { model ->
+                    scope.launch {
+                        // TODO: Implement mesh model download
+                    }
+                }
+            )
+            2 -> PersonasTab(
                 personas = personas,
                 selectedPersonaId = selectedPersonaId,
                 onSelectPersona = { viewModel.selectPersona(it) },
@@ -679,4 +696,120 @@ private fun AddPersonaDialog(
             }
         }
     )
+}
+
+@Composable
+private fun MeshModelsTab(
+    meshModels: List<com.llamafarm.atmosphere.mesh.ModelCatalogEntry>,
+    onDownloadModel: (com.llamafarm.atmosphere.mesh.ModelCatalogEntry) -> Unit
+) {
+    if (meshModels.isEmpty()) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Icon(
+                    Icons.Default.Cloud,
+                    contentDescription = null,
+                    modifier = Modifier.size(64.dp),
+                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                )
+                Text(
+                    "No mesh models discovered",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    "Models from other nodes will appear here",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    } else {
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(meshModels, key = { it.modelId }) { model ->
+                MeshModelCard(
+                    model = model,
+                    onDownload = { onDownloadModel(model) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MeshModelCard(
+    model: com.llamafarm.atmosphere.mesh.ModelCatalogEntry,
+    onDownload: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = when (model.type) {
+                    com.llamafarm.atmosphere.mesh.ModelType.VISION -> Icons.Default.Camera
+                    com.llamafarm.atmosphere.mesh.ModelType.LLM -> Icons.Default.Chat
+                    com.llamafarm.atmosphere.mesh.ModelType.AUDIO -> Icons.Default.Mic
+                    com.llamafarm.atmosphere.mesh.ModelType.EMBEDDING -> Icons.Default.Functions
+                    else -> Icons.Default.Cloud
+                },
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+            )
+            
+            Spacer(Modifier.width(12.dp))
+            
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = model.name,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium
+                )
+                
+                Text(
+                    text = "${model.type.name.lowercase()} • ${model.format.uppercase()}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                
+                Spacer(Modifier.height(4.dp))
+                
+                val bestPeer = model.getBestPeer()
+                if (bestPeer != null) {
+                    Text(
+                        text = "Available from ${bestPeer.nodeName} (${model.availableOnPeers.size} peer${if (model.availableOnPeers.size > 1) "s" else ""})",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                }
+                
+                val sizeMB = model.sizeBytes / (1024 * 1024)
+                Text(
+                    text = "Size: $sizeMB MB • v${model.version}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline
+                )
+            }
+            
+            IconButton(onClick = onDownload) {
+                Icon(
+                    Icons.Default.Download,
+                    contentDescription = "Download",
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+    }
 }

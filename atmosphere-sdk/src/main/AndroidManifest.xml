@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 
+        Atmosphere SDK - Client library for using Atmosphere mesh from other apps.
+        This manifest is minimal - the SDK doesn't declare any components.
+        All services live in the main Atmosphere app.
+    -->
+</manifest>
