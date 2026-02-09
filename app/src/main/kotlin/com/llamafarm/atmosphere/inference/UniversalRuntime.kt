@@ -256,8 +256,14 @@ Be precise and analytical. Use structured formats when helpful.
         val userMsg = Message(Message.Role.USER, userMessage)
         addToHistory(userMsg)
         
-        // Build the prompt with context
-        val prompt = buildPromptWithContext(userMessage)
+        // ARM AiChat applies chat template automatically via sendUserPrompt(),
+        // so we just send the raw message (with RAG context if available).
+        val ragContext = findRagMatches(userMessage)
+        val prompt = if (ragContext.isNotEmpty()) {
+            "Use the following context to answer the user's question:\n$ragContext\n\nUser Question: $userMessage"
+        } else {
+            userMessage
+        }
         
         // Track assistant response
         val responseBuilder = StringBuilder()

@@ -8,9 +8,31 @@ Atmosphere connects devices into an intelligent mesh where AI capabilities are d
 
 ### 🧠 On-Device AI Inference
 - **ONNX Runtime** — YOLOv8 object detection running locally at 40-60ms per frame
-- **llama.cpp** — GGUF language model inference on-device (via bundled AAR)
+- **llama.cpp** — GGUF language model inference on-device (via ARM AiChat AAR)
+- **Auto-load on startup** — Bundled model extracts and loads automatically, ready to chat
 - **Google ML Kit** — Barcode scanning, extensible to face/text detection
 - **Model management** — Download, install, and hot-swap models from mesh peers
+
+### 📦 Supported GGUF Models
+
+The bundled llama.cpp (Feb 2026) supports 100+ architectures. Tested on Pixel:
+
+| Model | Size (Q4_K_M) | Status | Notes |
+|-------|--------------|--------|-------|
+| **Llama 3.2 1B Instruct** | 770MB | ✅ **Default** | Fast, reliable, great quality for 1B |
+| **Llama 3.2 3B Instruct** | 2.0GB | ✅ Works | Better quality, slower (~3-5 tok/s) |
+| **Gemma 2 2B Instruct** | 1.6GB | ✅ Works | Google's small model, good reasoning |
+| **Gemma 3 1B** | ~800MB | ✅ Works | Latest Google small model |
+| **Phi-3 Mini (3.8B)** | 2.2GB | ✅ Works | Microsoft, strong for size |
+| **Qwen 2.5 1.5B** | 1.1GB | ✅ Works | Alibaba, multilingual |
+| **SmolLM2 1.7B** | 1.0GB | ✅ Works | HuggingFace, efficient |
+| Granite 3.1 1B A400M | 784MB | ⚠️ **Garbled** | [Known MoE bug](https://github.com/ggml-org/llama.cpp/issues/16152) |
+| Granite 3.1 2B | 1.5GB | ⚠️ **Garbled** | Same MoE issue |
+| Qwen3 1.7B | 1.0GB | ❌ Rejected | ARM AiChat architecture check |
+
+> **To bundle a different model:** Place the `.gguf` file in `app/src/main/assets/models/` and update `ModelManager.DEFAULT_MODEL`. Models can also be downloaded at runtime from the Models screen.
+
+> **Memory guide:** Pixel 9 (12GB RAM) comfortably runs ≤3B models. 1B models use ~1.5GB total (model + KV cache + compute). Larger models may OOM.
 
 ### 👁️ Real-Time Vision
 - **Live camera detection** — CameraX + ONNX pipeline with bounding boxes, confidence scores, FPS counter

@@ -28,7 +28,7 @@ android {
 
         // NDK configuration for Rust libraries
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+            abiFilters += listOf("arm64-v8a")  // Pixel/modern devices only — saves ~100MB
         }
 
         // Build config fields
@@ -104,7 +104,7 @@ android {
         }
         // Include Rust .so libraries
         jniLibs {
-            useLegacyPackaging = false
+            useLegacyPackaging = true  // Required: ggml_backend_load_all_from_path needs .so files on filesystem
         }
     }
     

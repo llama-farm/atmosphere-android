@@ -91,6 +91,10 @@ class AtmosphereApplication : Application() {
     var modelManager: ModelManager? = null
         private set
     
+    /** True once the default GGUF model is loaded into the native engine */
+    @Volatile var isLocalModelReady = false
+        private set
+    
     var cameraCapability: CameraCapability? = null
         private set
     
@@ -146,19 +150,21 @@ class AtmosphereApplication : Application() {
         try {
             modelManager = ModelManager(this)
             
-            // Check if bundled model exists and extract it in background
+            // Extract bundled model if needed, then signal ready for InferenceService
             if (modelManager!!.hasBundledDefaultModel() && !modelManager!!.isDefaultModelReady()) {
                 Log.i(TAG, "Bundled model detected, extracting in background...")
                 applicationScope.launch {
                     val result = modelManager!!.initializeDefaultModel()
                     if (result.isSuccess) {
-                        Log.i(TAG, "Bundled model extracted successfully: ${result.getOrNull()}")
+                        Log.i(TAG, "✅ Bundled model extracted: ${result.getOrNull()}")
+                        isLocalModelReady = true
                     } else {
                         Log.w(TAG, "Failed to extract bundled model: ${result.exceptionOrNull()?.message}")
                     }
                 }
             } else if (modelManager!!.isDefaultModelReady()) {
-                Log.d(TAG, "Default model already ready")
+                Log.i(TAG, "Default model already on disk, ready for InferenceService")
+                isLocalModelReady = true
             } else {
                 Log.d(TAG, "No bundled model, user will need to download")
             }

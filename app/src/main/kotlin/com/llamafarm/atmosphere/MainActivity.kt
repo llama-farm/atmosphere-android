@@ -10,6 +10,8 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -431,6 +433,24 @@ class MainActivity : ComponentActivity() {
         // Safe to call from Activity.onCreate() on Android 12+ (activities have foreground permission)
         com.llamafarm.atmosphere.service.ServiceManager.getConnector().bind()
         com.llamafarm.atmosphere.service.AtmosphereService.start(this)
+        
+        // Auto-start inference service once local model is ready
+        val activity = this
+        lifecycleScope.launch {
+            val app = application as AtmosphereApplication
+            var attempts = 0
+            while (!app.isLocalModelReady && attempts < 30) {
+                kotlinx.coroutines.delay(500)
+                attempts++
+            }
+            if (app.isLocalModelReady) {
+                val defaultModel = com.llamafarm.atmosphere.inference.ModelManager.DEFAULT_MODEL
+                android.util.Log.i("MainActivity", "Auto-starting InferenceService with ${defaultModel.id}")
+                com.llamafarm.atmosphere.service.InferenceService.start(activity, defaultModel.id, "ASSISTANT")
+            } else {
+                android.util.Log.w("MainActivity", "Local model not ready after 15s, skipping InferenceService auto-start")
+            }
+        }
     }
 }
 

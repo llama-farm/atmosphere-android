@@ -222,6 +222,13 @@ class LlamaCppEngine private constructor(
                     )
                     _state.value = State.Error(error)
                     return@withContext Result.failure(error)
+                } catch (e: IllegalStateException) {
+                    // Model already loaded (e.g. "Cannot load model in ModelReady!")
+                    if (e.message?.contains("ModelReady") == true) {
+                        Log.i(TAG, "Model already loaded, reusing existing model")
+                    } else {
+                        throw e
+                    }
                 }
             } else {
                 // Use direct JNI
@@ -283,7 +290,18 @@ class LlamaCppEngine private constructor(
             _state.value = State.ProcessingSystemPrompt
             
             if (useArmFallback) {
-                armEngine?.setSystemPrompt(prompt)
+                try {
+                    armEngine?.setSystemPrompt(prompt)
+                } catch (e: IllegalStateException) {
+                    // ARM AiChat requires system prompt RIGHT AFTER model load.
+                    // If model was already loaded (reused), system prompt may already be set.
+                    if (e.message?.contains("RIGHT AFTER") == true && currentSystemPrompt != null) {
+                        Log.i(TAG, "System prompt already set from previous load, skipping")
+                        _state.value = State.ModelReady
+                        return@withContext Result.success(Unit)
+                    }
+                    throw e
+                }
             } else {
                 val result = nativeSetSystemPrompt(prompt)
                 if (result != 0) {

@@ -261,6 +261,24 @@ class InferenceViewModel(application: Application) : AndroidViewModel(applicatio
     }
     
     /**
+     * Auto-start inference service if the default model is already extracted on disk.
+     */
+    fun autoStartIfModelReady() {
+        viewModelScope.launch {
+            try {
+                val modelManager = ModelManager(getApplication())
+                if (modelManager.isDefaultModelReady()) {
+                    val defaultModel = ModelManager.DEFAULT_MODEL
+                    Log.i("InferenceViewModel", "Auto-starting inference with ${defaultModel.id}")
+                    loadModel(defaultModel.id)
+                }
+            } catch (e: Exception) {
+                Log.w("InferenceViewModel", "Auto-start failed: ${e.message}")
+            }
+        }
+    }
+    
+    /**
      * Load a model in the service.
      */
     fun loadModel(modelId: String, persona: UniversalRuntime.Persona = UniversalRuntime.Persona.ASSISTANT) {

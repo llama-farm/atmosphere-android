@@ -24,12 +24,12 @@ class ModelManager(private val context: Context) {
         
         // Default model: IBM Granite (supported by ARM AiChat/llama.cpp)
         val DEFAULT_MODEL = ModelConfig(
-            id = "granite-3.1-1b-q4km",
-            name = "Granite 3.1 1B Instruct Q4_K_M",
-            huggingFaceRepo = "ibm-granite/granite-3.1-1b-a400m-instruct-GGUF",
-            fileName = "granite-3.1-1b-a400m-instruct.Q4_K_M.gguf",
-            sizeBytes = 300_000_000L, // ~300MB
-            description = "IBM Granite 3.1 1B - tiny, fast, supported by ARM AiChat"
+            id = "llama-3.2-1b-q4km",
+            name = "Llama 3.2 1B Instruct Q4_K_M",
+            huggingFaceRepo = "bartowski/Llama-3.2-1B-Instruct-GGUF",
+            fileName = "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+            sizeBytes = 808_000_000L, // ~770MB on disk
+            description = "Meta Llama 3.2 1B - reliable on-device inference"
         )
         
         // Available models (all supported by ARM AiChat/llama.cpp)
