@@ -11,6 +11,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -19,7 +20,9 @@ import androidx.compose.ui.unit.dp
 import com.llamafarm.atmosphere.apps.AppCapability
 import com.llamafarm.atmosphere.apps.AppEndpoint
 import com.llamafarm.atmosphere.apps.AppRegistry
+import com.llamafarm.atmosphere.apps.AppTool
 import com.llamafarm.atmosphere.apps.PushEvent
+import com.llamafarm.atmosphere.apps.ToolParam
 import com.llamafarm.atmosphere.viewmodel.AtmosphereViewModel
 import kotlinx.coroutines.delay
 import org.json.JSONObject
@@ -241,9 +244,15 @@ private fun CapabilitySection(cap: AppCapability, viewModel: AtmosphereViewModel
         }
     }
 
-    // Endpoints
-    cap.endpoints.forEach { entry ->
-        EndpointRow(capabilityId = cap.id, endpoint = entry.value, viewModel = viewModel)
+    // Show tools if available, otherwise fall back to endpoints
+    if (cap.tools.isNotEmpty()) {
+        cap.tools.forEach { (_, tool) ->
+            ToolRow(appName = cap.appName, tool = tool, viewModel = viewModel)
+        }
+    } else {
+        cap.endpoints.forEach { entry ->
+            EndpointRow(capabilityId = cap.id, endpoint = entry.value, viewModel = viewModel)
+        }
     }
 }
 
@@ -293,6 +302,123 @@ private fun EndpointRow(capabilityId: String, endpoint: AppEndpoint, viewModel: 
             }
         }
 
+        AnimatedVisibility(visible = showResponse) {
+            Surface(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                shape = MaterialTheme.shapes.small,
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            ) {
+                Text(
+                    text = responseText,
+                    modifier = Modifier.padding(8.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 20
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolRow(appName: String, tool: AppTool, viewModel: AtmosphereViewModel) {
+    var showDetails by remember { mutableStateOf(false) }
+    var showResponse by remember { mutableStateOf(false) }
+    var responseText by remember { mutableStateOf("") }
+    var isLoading by remember { mutableStateOf(false) }
+    // Parameter input state
+    val paramValues = remember(tool.name) {
+        mutableStateMapOf<String, String>().apply {
+            tool.parameters.forEach { p ->
+                put(p.name, p.default ?: "")
+            }
+        }
+    }
+
+    Column(modifier = Modifier.padding(start = 36.dp, top = 4.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { showDetails = !showDetails },
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(shape = MaterialTheme.shapes.extraSmall, color = methodColor(tool.endpoint.method)) {
+                Text(
+                    text = tool.endpoint.method,
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = tool.name, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+                if (tool.description.isNotEmpty()) {
+                    Text(text = tool.description, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+                }
+                if (tool.returns.isNotEmpty()) {
+                    Text(text = "→ ${tool.returns}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f), maxLines = 1)
+                }
+            }
+            if (tool.parameters.isNotEmpty()) {
+                Surface(shape = MaterialTheme.shapes.extraSmall, color = MaterialTheme.colorScheme.tertiaryContainer) {
+                    Text(
+                        text = "${tool.parameters.size} params",
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+                Spacer(Modifier.width(4.dp))
+            }
+            if (isLoading) {
+                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            } else {
+                Icon(Icons.Default.PlayArrow, contentDescription = "invoke", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp).clickable {
+                    isLoading = true
+                    showResponse = true
+                    responseText = "Loading..."
+                    // Build params JSON
+                    val paramsJson = JSONObject()
+                    tool.parameters.forEach { p ->
+                        val v = paramValues[p.name] ?: ""
+                        if (v.isNotEmpty()) paramsJson.put(p.name, v)
+                    }
+                    viewModel.callTool(appName, tool.name, paramsJson) { response ->
+                        responseText = response.toString(2)
+                        isLoading = false
+                    }
+                })
+            }
+        }
+
+        // Parameter input fields
+        AnimatedVisibility(visible = showDetails && tool.parameters.isNotEmpty(), enter = expandVertically(), exit = shrinkVertically()) {
+            Column(modifier = Modifier.padding(top = 4.dp, start = 8.dp)) {
+                tool.parameters.forEach { param ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "${param.name}${if (param.required) "*" else ""}",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.width(100.dp)
+                        )
+                        OutlinedTextField(
+                            value = paramValues[param.name] ?: "",
+                            onValueChange = { paramValues[param.name] = it },
+                            modifier = Modifier.weight(1f).height(40.dp),
+                            placeholder = { Text(param.type, style = MaterialTheme.typography.labelSmall) },
+                            textStyle = MaterialTheme.typography.labelSmall,
+                            singleLine = true
+                        )
+                    }
+                }
+            }
+        }
+
+        // Response
         AnimatedVisibility(visible = showResponse) {
             Surface(
                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp),

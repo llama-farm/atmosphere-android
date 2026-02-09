@@ -273,6 +273,41 @@ class MeshConnection(
     }
     
     private val pendingAppRequests = java.util.concurrent.ConcurrentHashMap<String, (JSONObject) -> Unit>()
+
+    /**
+     * Call a tool on a mesh app.
+     * Sends a tool_call message and invokes callback with response.
+     */
+    fun callTool(
+        appName: String,
+        toolName: String,
+        params: JSONObject = JSONObject(),
+        onResponse: ((JSONObject) -> Unit)? = null
+    ): String {
+        val requestId = java.util.UUID.randomUUID().toString()
+
+        if (onResponse != null) {
+            pendingAppRequests[requestId] = onResponse
+        }
+
+        val payload = JSONObject().apply {
+            put("type", "tool_call")
+            put("request_id", requestId)
+            put("app", appName)
+            put("tool", toolName)
+            put("params", params)
+            put("node_id", gossipManager.nodeId)
+        }
+
+        val relayMessage = JSONObject().apply {
+            put("type", "broadcast")
+            put("payload", payload)
+        }
+
+        Log.d(TAG, "🔧 Calling tool: $appName/$toolName (req=$requestId)")
+        sendMessage(relayMessage)
+        return requestId
+    }
     
     /**
      * Handle incoming message from relay.
@@ -366,6 +401,15 @@ class MeshConnection(
                                 }
                             }
                             
+                            "tool_response" -> {
+                                val requestId = payload.optString("request_id", "")
+                                Log.i(TAG, "🔧 Tool response for request: $requestId")
+                                pendingAppRequests.remove(requestId)?.invoke(payload)
+                                scope.launch {
+                                    _messages.emit(MeshMessage.AppResponse(requestId, payload.optInt("status", 200), payload.optJSONObject("body") ?: JSONObject()))
+                                }
+                            }
+
                             "app_response" -> {
                                 val requestId = payload.optString("request_id", "")
                                 Log.i(TAG, "📥 App response for request: $requestId")

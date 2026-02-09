@@ -79,6 +79,7 @@ sealed class Screen(val route: String, val title: String, val icon: ImageVector?
     data object Pairing : Screen("pairing", "Pairing", null)
     data object RAG : Screen("rag", "RAG", Icons.Default.Search)
     data object VisionTest : Screen("vision_test", "Vision", Icons.Default.CameraAlt)
+    data object Horizon : Screen("horizon", "HORIZON", Icons.Default.Flight)
 }
 
 /**
@@ -96,6 +97,7 @@ class MainActivity : ComponentActivity() {
 
     private val screens = listOf(
         Screen.Home,
+        Screen.Horizon,
         Screen.Inference,
         Screen.RAG,
         Screen.VisionTest,

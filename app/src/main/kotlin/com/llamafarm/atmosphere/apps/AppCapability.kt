@@ -1,5 +1,6 @@
 package com.llamafarm.atmosphere.apps
 
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -22,6 +23,72 @@ data class AppEndpoint(
 }
 
 /**
+ * Parameter specification for a tool.
+ */
+data class ToolParam(
+    val name: String,
+    val type: String = "string",
+    val description: String = "",
+    val required: Boolean = true,
+    val default: String? = null,
+    val enum: List<String>? = null
+) {
+    companion object {
+        fun fromJson(json: JSONObject): ToolParam = ToolParam(
+            name = json.optString("name", ""),
+            type = json.optString("type", "string"),
+            description = json.optString("description", ""),
+            required = json.optBoolean("required", true),
+            default = json.optString("default", null),
+            enum = json.optJSONArray("enum")?.let { arr ->
+                (0 until arr.length()).map { arr.getString(it) }
+            }
+        )
+    }
+}
+
+/**
+ * Tool/function spec — like OpenAI function calling but for mesh apps.
+ */
+data class AppTool(
+    val name: String,
+    val description: String = "",
+    val parameters: List<ToolParam> = emptyList(),
+    val returns: String = "",
+    val endpoint: AppEndpoint,
+    val tags: List<String> = emptyList()
+) {
+    companion object {
+        fun fromJson(name: String, json: JSONObject): AppTool {
+            val params = mutableListOf<ToolParam>()
+            json.optJSONArray("parameters")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    val p = arr.optJSONObject(i) ?: continue
+                    params.add(ToolParam.fromJson(p))
+                }
+            }
+
+            val epJson = json.optJSONObject("endpoint") ?: JSONObject()
+            val endpoint = AppEndpoint.fromJson(name, epJson)
+
+            val tags = mutableListOf<String>()
+            json.optJSONArray("tags")?.let { arr ->
+                for (i in 0 until arr.length()) tags.add(arr.getString(i))
+            }
+
+            return AppTool(
+                name = name,
+                description = json.optString("description", ""),
+                parameters = params,
+                returns = json.optString("returns", ""),
+                endpoint = endpoint,
+                tags = tags
+            )
+        }
+    }
+}
+
+/**
  * A capability discovered from a mesh app (e.g., HORIZON).
  * Parsed from gossip capability_announce messages with app types.
  */
@@ -34,6 +101,7 @@ data class AppCapability(
     val description: String = "",
     val keywords: List<String> = emptyList(),
     val endpoints: Map<String, AppEndpoint> = emptyMap(),
+    val tools: Map<String, AppTool> = emptyMap(),
     val pushEvents: List<String> = emptyList(),
     val timestamp: Long = System.currentTimeMillis(),
     val expiresAt: Long = System.currentTimeMillis() + 300_000
@@ -76,6 +144,17 @@ data class AppCapability(
                 }
             }
 
+            // Parse tools map
+            val tools = mutableMapOf<String, AppTool>()
+            json.optJSONObject("tools")?.let { toolsJson ->
+                toolsJson.keys().forEach { key ->
+                    val toolObj = toolsJson.optJSONObject(key)
+                    if (toolObj != null) {
+                        tools[key] = AppTool.fromJson(key, toolObj)
+                    }
+                }
+            }
+
             // Parse push events
             val pushEvents = mutableListOf<String>()
             json.optJSONArray("push_events")?.let { arr ->
@@ -101,6 +180,7 @@ data class AppCapability(
                 description = json.optString("description", json.optString("label", "")),
                 keywords = keywords,
                 endpoints = endpoints,
+                tools = tools,
                 pushEvents = pushEvents,
                 timestamp = json.optLong("timestamp", System.currentTimeMillis()),
                 expiresAt = json.optLong("expires_at", System.currentTimeMillis() + 300_000)

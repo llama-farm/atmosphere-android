@@ -287,6 +287,23 @@ class ServiceConnector(private val context: Context) {
         }
         svc.sendAppRequest(capabilityId, endpoint, params, onResponse)
     }
+
+    fun callTool(
+        appName: String,
+        toolName: String,
+        params: org.json.JSONObject = org.json.JSONObject(),
+        onResponse: (org.json.JSONObject) -> Unit
+    ) {
+        val svc = service
+        if (svc == null) {
+            onResponse(org.json.JSONObject().apply {
+                put("status", 503)
+                put("error", "Service not bound")
+            })
+            return
+        }
+        svc.callTool(appName, toolName, params, onResponse)
+    }
     
     /**
      * Get the service's mesh events, or null if not bound.

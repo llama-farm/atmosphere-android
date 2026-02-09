@@ -1173,4 +1173,34 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
             metadata = mapOf("capability" to capabilityId, "endpoint" to endpoint)
         ))
     }
+
+    /**
+     * Call a tool on a mesh app by name.
+     */
+    fun callTool(
+        appName: String,
+        toolName: String,
+        params: JSONObject = JSONObject(),
+        onResponse: (JSONObject) -> Unit
+    ) {
+        val connector = serviceConnector
+        if (connector == null) {
+            onResponse(JSONObject().apply {
+                put("status", 503)
+                put("error", "Service not available")
+            })
+            return
+        }
+
+        connector.callTool(appName, toolName, params) { response ->
+            onResponse(response)
+        }
+
+        addMeshEvent(MeshEvent(
+            type = "tool_call",
+            title = "Tool Call",
+            detail = "$appName/$toolName",
+            metadata = mapOf("app" to appName, "tool" to toolName)
+        ))
+    }
 }

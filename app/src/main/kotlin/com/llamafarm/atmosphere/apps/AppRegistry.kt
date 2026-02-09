@@ -86,6 +86,27 @@ class AppRegistry {
     fun getByApp(appName: String): List<AppCapability> =
         getAppCapabilities().filter { it.appName.equals(appName, ignoreCase = true) }
 
+    fun getToolsForApp(appName: String): Map<String, AppTool> {
+        val tools = mutableMapOf<String, AppTool>()
+        getByApp(appName).forEach { cap ->
+            tools.putAll(cap.tools)
+        }
+        return tools
+    }
+
+    fun findToolByName(toolName: String): Pair<AppCapability, AppTool>? {
+        for (cap in getAppCapabilities()) {
+            cap.tools[toolName]?.let { return Pair(cap, it) }
+        }
+        return null
+    }
+
+    fun getAllTools(): Map<String, AppTool> {
+        val tools = mutableMapOf<String, AppTool>()
+        getAppCapabilities().forEach { cap -> tools.putAll(cap.tools) }
+        return tools
+    }
+
     fun cleanupExpired() {
         val removed = capabilities.entries.removeAll { it.value.isExpired() }
         if (removed) refreshFlow()
