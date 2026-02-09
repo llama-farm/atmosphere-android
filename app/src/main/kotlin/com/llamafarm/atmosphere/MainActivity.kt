@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.Widgets
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Hub
@@ -46,6 +47,7 @@ import com.llamafarm.atmosphere.ui.screens.ConnectedAppsScreen
 import com.llamafarm.atmosphere.ui.screens.HomeScreen
 import com.llamafarm.atmosphere.ui.screens.InferenceScreen
 import com.llamafarm.atmosphere.ui.screens.JoinMeshScreen
+import com.llamafarm.atmosphere.ui.screens.MeshAppsScreen
 import com.llamafarm.atmosphere.ui.screens.MeshScreen
 import com.llamafarm.atmosphere.ui.screens.PairingScreen
 import com.llamafarm.atmosphere.ui.screens.SettingsScreen
@@ -68,6 +70,7 @@ sealed class Screen(val route: String, val title: String, val icon: ImageVector?
     data object Mesh : Screen("mesh", "Mesh", Icons.Default.Hub)
     data object Models : Screen("models", "Models", Icons.Default.Memory)
     data object ConnectedApps : Screen("connected_apps", "Apps", Icons.Default.Apps)
+    data object MeshApps : Screen("mesh_apps", "Mesh Apps", Icons.Default.Widgets)
     data object Test : Screen("test", "Test", Icons.Default.Send)
     data object Capabilities : Screen("capabilities", "Capabilities", Icons.Default.Memory)
     data object Settings : Screen("settings", "Settings", Icons.Default.Settings)
@@ -97,6 +100,7 @@ class MainActivity : ComponentActivity() {
         Screen.RAG,
         Screen.VisionTest,
         Screen.Mesh,
+        Screen.MeshApps,
         Screen.ConnectedApps,
         Screen.Test,
         Screen.Settings
@@ -571,6 +575,7 @@ fun AtmosphereApp(screens: List<Screen>, initialDeepLink: DeepLinkData? = null) 
             }
             composable(Screen.Capabilities.route) { CapabilitiesScreen() }
             composable(Screen.ConnectedApps.route) { ConnectedAppsScreen() }
+            composable(Screen.MeshApps.route) { MeshAppsScreen(viewModel) }
             composable(Screen.Settings.route) {
                 SettingsScreen(
                     onNavigateToTransportSettings = {

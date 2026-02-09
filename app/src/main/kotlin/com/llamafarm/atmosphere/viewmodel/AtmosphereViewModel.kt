@@ -401,6 +401,20 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
                             detail = message.message
                         ))
                     }
+                    is com.llamafarm.atmosphere.network.MeshMessage.AppResponse -> {
+                        addMeshEvent(MeshEvent(
+                            type = "app_response",
+                            title = "App Response (${message.status})",
+                            detail = "Request: ${message.requestId.take(8)}..."
+                        ))
+                    }
+                    is com.llamafarm.atmosphere.network.MeshMessage.PushDelivery -> {
+                        addMeshEvent(MeshEvent(
+                            type = "push",
+                            title = "Push: ${message.eventType}",
+                            detail = "From ${message.capabilityId}"
+                        ))
+                    }
                     is com.llamafarm.atmosphere.network.MeshMessage.Unknown -> {
                         Log.d(TAG, "Unknown message type: ${message.type}")
                     }
@@ -1122,5 +1136,41 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
     fun discoverPeers() {
         // Trigger discovery via native node if available
         // Or just wait for service updates
+    }
+    
+    // ============================================================================
+    // App Platform - Mesh App Discovery & Interaction
+    // ============================================================================
+    
+    /**
+     * Send a request to a mesh app endpoint.
+     * Routes through the service's MeshConnection.
+     */
+    fun sendAppRequest(
+        capabilityId: String,
+        endpoint: String,
+        params: JSONObject = JSONObject(),
+        onResponse: (JSONObject) -> Unit
+    ) {
+        val connector = serviceConnector
+        if (connector == null) {
+            onResponse(JSONObject().apply {
+                put("status", 503)
+                put("error", "Service not available")
+            })
+            return
+        }
+        
+        // Route through service - it has the active MeshConnection
+        connector.sendAppRequest(capabilityId, endpoint, params) { response ->
+            onResponse(response)
+        }
+        
+        addMeshEvent(MeshEvent(
+            type = "app_request",
+            title = "App Request",
+            detail = "$capabilityId → $endpoint",
+            metadata = mapOf("capability" to capabilityId, "endpoint" to endpoint)
+        ))
     }
 }

@@ -2,6 +2,7 @@ package com.llamafarm.atmosphere.network
 
 import android.content.Context
 import android.util.Log
+import com.llamafarm.atmosphere.apps.AppRegistry
 import com.llamafarm.atmosphere.core.CapabilityAnnouncement
 import com.llamafarm.atmosphere.core.GossipManager
 import kotlinx.coroutines.*
@@ -30,6 +31,7 @@ class MeshConnection(
     
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val gossipManager = GossipManager.getInstance(context)
+    private val appRegistry = AppRegistry.getInstance()
     
     private var webSocket: WebSocket? = null
     private var reconnectJob: Job? = null
@@ -235,6 +237,44 @@ class MeshConnection(
     }
     
     /**
+     * Send an app request through the mesh.
+     * Routes to the node hosting the capability.
+     */
+    fun sendAppRequest(
+        capabilityId: String,
+        endpoint: String,
+        params: JSONObject = JSONObject(),
+        onResponse: ((JSONObject) -> Unit)? = null
+    ): String {
+        val requestId = java.util.UUID.randomUUID().toString()
+        
+        // Store callback for response
+        if (onResponse != null) {
+            pendingAppRequests[requestId] = onResponse
+        }
+        
+        val payload = JSONObject().apply {
+            put("type", "app_request")
+            put("request_id", requestId)
+            put("capability_id", capabilityId)
+            put("endpoint", endpoint)
+            put("params", params)
+            put("node_id", gossipManager.nodeId)
+        }
+        
+        val relayMessage = JSONObject().apply {
+            put("type", "broadcast")
+            put("payload", payload)
+        }
+        
+        Log.d(TAG, "📤 Sending app_request: $capabilityId/$endpoint (req=$requestId)")
+        sendMessage(relayMessage)
+        return requestId
+    }
+    
+    private val pendingAppRequests = java.util.concurrent.ConcurrentHashMap<String, (JSONObject) -> Unit>()
+    
+    /**
      * Handle incoming message from relay.
      */
     private fun handleMessage(text: String) {
@@ -250,6 +290,7 @@ class MeshConnection(
                     // Another node is announcing capabilities
                     val nodeId = json.getString("node_id")
                     gossipManager.handleAnnouncement(nodeId, json)
+                    appRegistry.handleAnnouncement(nodeId, json)
                     
                     val capList = extractCapabilityLabels(json)
                     scope.launch {
@@ -307,6 +348,8 @@ class MeshConnection(
                                 
                                 if (capabilities != null && capabilities.length() > 0) {
                                     gossipManager.handleAnnouncement(nodeId, payload)
+                                    // Also feed into AppRegistry for app/* capabilities
+                                    appRegistry.handleAnnouncement(nodeId, payload)
                                     val capList = extractCapabilityLabels(payload)
                                     scope.launch {
                                         _messages.emit(MeshMessage.CapabilityAnnounce(nodeId, payload, capList, fromNode))
@@ -320,6 +363,27 @@ class MeshConnection(
                                 Log.i(TAG, "📥 LLM response received for request: $requestId")
                                 scope.launch {
                                     _messages.emit(MeshMessage.InferenceResponse(requestId, payload))
+                                }
+                            }
+                            
+                            "app_response" -> {
+                                val requestId = payload.optString("request_id", "")
+                                Log.i(TAG, "📥 App response for request: $requestId")
+                                pendingAppRequests.remove(requestId)?.invoke(payload)
+                                scope.launch {
+                                    _messages.emit(MeshMessage.AppResponse(requestId, payload.optInt("status", 200), payload.optJSONObject("body") ?: JSONObject()))
+                                }
+                            }
+                            
+                            "push_delivery" -> {
+                                Log.i(TAG, "📨 Push delivery from ${payload.optString("capability_id")}")
+                                appRegistry.handlePushDelivery(payload)
+                                scope.launch {
+                                    _messages.emit(MeshMessage.PushDelivery(
+                                        payload.optString("capability_id", ""),
+                                        payload.optString("event_type", ""),
+                                        payload.optJSONObject("data") ?: JSONObject()
+                                    ))
                                 }
                             }
                             

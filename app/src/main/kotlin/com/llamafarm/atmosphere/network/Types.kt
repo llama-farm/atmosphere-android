@@ -145,6 +145,21 @@ sealed class MeshMessage {
         override val sourceNodeId: String? = null
     ) : MeshMessage()
     
+    // App platform
+    data class AppResponse(
+        val requestId: String,
+        val status: Int = 200,
+        val body: JSONObject = JSONObject(),
+        override val sourceNodeId: String? = null
+    ) : MeshMessage()
+    
+    data class PushDelivery(
+        val capabilityId: String,
+        val eventType: String,
+        val data: JSONObject = JSONObject(),
+        override val sourceNodeId: String? = null
+    ) : MeshMessage()
+    
     // Errors
     data class Error(
         val message: String,

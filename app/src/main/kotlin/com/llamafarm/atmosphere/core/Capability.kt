@@ -79,7 +79,15 @@ enum class CapabilityType(val value: String) {
     
     // Actions
     ACTION_NOTIFY("action/notify"),
-    ACTION_STORE("action/store");
+    ACTION_STORE("action/store"),
+    
+    // App-level capabilities (mesh app platform)
+    APP_QUERY("app/query"),
+    APP_ACTION("app/action"),
+    APP_STREAM("app/stream"),
+    APP_CHAT("app/chat");
+    
+    val isAppType: Boolean get() = value.startsWith("app/")
     
     companion object {
         fun fromValue(value: String): CapabilityType = 

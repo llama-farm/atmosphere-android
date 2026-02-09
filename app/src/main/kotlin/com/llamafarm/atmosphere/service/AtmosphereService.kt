@@ -623,6 +623,26 @@ class AtmosphereService : Service() {
      * @param onResponse Callback with (response, error)
      * @return Request ID or null if not connected
      */
+    /**
+     * Send an app request to a mesh app capability endpoint.
+     */
+    fun sendAppRequest(
+        capabilityId: String,
+        endpoint: String,
+        params: JSONObject = JSONObject(),
+        onResponse: (JSONObject) -> Unit
+    ) {
+        val connection = meshConnection
+        if (connection == null) {
+            onResponse(JSONObject().apply {
+                put("status", 503)
+                put("error", "No mesh connection")
+            })
+            return
+        }
+        connection.sendAppRequest(capabilityId, endpoint, params, onResponse)
+    }
+    
     fun sendLlmRequest(
         prompt: String,
         model: String? = null,

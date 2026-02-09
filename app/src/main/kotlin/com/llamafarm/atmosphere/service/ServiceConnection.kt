@@ -269,6 +269,26 @@ class ServiceConnector(private val context: Context) {
     }
     
     /**
+     * Send an app request through the service's mesh connection.
+     */
+    fun sendAppRequest(
+        capabilityId: String,
+        endpoint: String,
+        params: org.json.JSONObject = org.json.JSONObject(),
+        onResponse: (org.json.JSONObject) -> Unit
+    ) {
+        val svc = service
+        if (svc == null) {
+            onResponse(org.json.JSONObject().apply {
+                put("status", 503)
+                put("error", "Service not bound")
+            })
+            return
+        }
+        svc.sendAppRequest(capabilityId, endpoint, params, onResponse)
+    }
+    
+    /**
      * Get the service's mesh events, or null if not bound.
      */
     fun getServiceMeshEvents(): StateFlow<List<AtmosphereService.MeshEvent>>? {
