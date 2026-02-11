@@ -61,17 +61,51 @@ The bundled llama.cpp (Feb 2026) supports 100+ architectures. Tested on Pixel:
 ### 🔌 SDK for Third-Party Apps
 - **AIDL Service** — Any Android app can bind to Atmosphere for mesh AI
 - **AtmosphereClient** — Simple SDK: `connect()`, `chat()`, `detectObjects()`, `meshStatus()`
-- **Two demo apps included:**
-  - **Atmosphere Chat** — Material3 chat UI with model selector and routing metadata
-  - **Atmosphere Photo** — Camera capture with bounding box overlay and detection history
+- **Four apps included:** Chat Client, Photo Client, HORIZON, and the main Atmosphere service
 
-## 📱 Three Apps
+```kotlin
+// In your app's build.gradle.kts
+implementation(project(":atmosphere-sdk"))
+
+// Connect to Atmosphere mesh
+val client = AtmosphereClient(context)
+client.connect()
+
+// Chat with any model on the mesh
+val response = client.chat("What do llamas eat?")
+
+// Call a registered tool on a specific app
+val mission = client.callTool("horizon", "get_mission_summary", emptyMap())
+
+// Vision detection
+val detections = client.detectObjects(bitmap)
+```
+
+## 📱 Five Apps
 
 | App | Package | Description |
 |-----|---------|-------------|
 | **Atmosphere** | `com.llamafarm.atmosphere` | Main mesh service + Vision + Chat + Dashboard |
 | **Atmosphere Chat** | `com.llamafarm.atmosphere.client` | Lightweight chat demo using SDK |
 | **Atmosphere Photo** | `com.llamafarm.atmosphere.photo` | Vision demo with camera + detection |
+| **HORIZON** | `com.llamafarm.atmosphere.horizon` | Disconnected ops intelligence for AMC |
+| **Demo Client** | *(adjacent repo)* | Minimal SDK integration example |
+
+## 🎯 HORIZON App
+
+**Disconnected ops intelligence for Air Force AMC (Air Mobility Command).**
+
+HORIZON is a standalone module at `horizon-app/` built entirely on the Atmosphere SDK. It provides tactical decision support across five pillars:
+
+1. **Mission Anomaly** — Real-time detection of schedule deviations, maintenance flags, and logistics disruptions
+2. **Knowledge Brain (RAG)** — Retrieval-augmented generation over doctrine, AFIs, and mission archives
+3. **Voice Intel** — Hands-free voice queries and briefings for aircrew
+4. **Agent Planner** — Multi-step mission planning with tool-calling agents
+5. **OSINT Cache** — Offline cache of open-source intelligence, weather, NOTAMs, and airfield data
+
+HORIZON connects to the HORIZON backend through the Atmosphere mesh via `callTool()`. When SATCOM is denied, it falls back to on-device models and cached data — **fully operational offline**.
+
+---
 
 ## 🏗️ Architecture
 
@@ -97,12 +131,31 @@ The bundled llama.cpp (Feb 2026) supports 100+ architectures. Tested on Pixel:
 │  └──────────────────────────────────────────────────┘ │
 │       │              AIDL                              │
 ├───────┴────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐                     │
-│  │ Chat Client │  │ Photo Client│  Third-party apps   │
-│  │   (SDK)     │  │   (SDK)     │                     │
-│  └─────────────┘  └─────────────┘                     │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐    │
+│  │ Chat Client │  │ Photo Client│  │   HORIZON   │    │
+│  │   (SDK)     │  │   (SDK)     │  │   (SDK)     │    │
+│  └─────────────┘  └─────────────┘  └─────────────┘    │
 └────────────────────────────────────────────────────────┘
 ```
+
+## 🔨 Building APKs
+
+```bash
+# All apps
+./gradlew assembleDebug
+
+# Individual
+./gradlew :app:assembleDebug                    # Main service (1.6GB - includes GGUF models)
+./gradlew :horizon-app:assembleDebug            # HORIZON (53MB)
+./gradlew :atmosphere-client:assembleDebug      # Chat client (52MB)
+./gradlew :atmosphere-photo:assembleDebug       # Photo client (57MB)
+```
+
+## 📥 Pre-built APKs
+
+Pre-built debug and release APKs are available on [GitHub Releases](https://github.com/llama-farm/atmosphere-android/releases).
+
+---
 
 ## 🚀 Quick Start
 
@@ -186,6 +239,7 @@ atmosphere-android/
 │   └── AtmosphereClient.kt      # connect(), chat(), detectObjects()
 ├── atmosphere-client/            # Demo chat app
 ├── atmosphere-photo/             # Demo vision app
+├── horizon-app/                  # HORIZON disconnected ops app
 └── llama.cpp/                    # Submodule for on-device LLM
 ```
 
