@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Military/tactical themed icon - stylized H for HORIZON -->
+    <path
+        android:fillColor="#3B82F6"
+        android:pathData="M34,30 L34,78 L42,78 L42,58 L66,58 L66,78 L74,78 L74,30 L66,30 L66,50 L42,50 L42,30 Z" />
+    <path
+        android:fillColor="#1E3A5F"
+        android:pathData="M26,82 L82,82 L82,86 L26,86 Z" />
+</vector>

@@ -555,6 +555,105 @@ class AtmosphereClient private constructor(
         }
     }
     
+    // ========================== Mesh App / Tool API ==========================
+    
+    /**
+     * Get all available mesh apps.
+     */
+    suspend fun getApps(): List<MeshApp> = withContext(Dispatchers.IO) {
+        val service = connector.getService()
+            ?: throw AtmosphereNotConnectedException()
+        
+        try {
+            val responseJson = service.getApps()
+            val arr = JSONArray(responseJson)
+            val apps = mutableListOf<MeshApp>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                apps.add(MeshApp(
+                    name = obj.optString("name", ""),
+                    description = obj.optString("description", ""),
+                    toolCount = obj.optInt("toolCount", 0)
+                ))
+            }
+            apps
+        } catch (e: RemoteException) {
+            Log.e(TAG, "Remote exception in getApps()", e)
+            emptyList()
+        }
+    }
+    
+    /**
+     * Get tools for a specific mesh app.
+     */
+    suspend fun getAppTools(appName: String): List<AppTool> = withContext(Dispatchers.IO) {
+        val service = connector.getService()
+            ?: throw AtmosphereNotConnectedException()
+        
+        try {
+            val responseJson = service.getAppTools(appName)
+            val arr = JSONArray(responseJson)
+            val tools = mutableListOf<AppTool>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                val paramsArr = obj.optJSONArray("params") ?: JSONArray()
+                val params = mutableListOf<ToolParam>()
+                for (j in 0 until paramsArr.length()) {
+                    val p = paramsArr.getJSONObject(j)
+                    params.add(ToolParam(
+                        name = p.optString("name", ""),
+                        type = p.optString("type", "string"),
+                        description = p.optString("description", ""),
+                        required = p.optBoolean("required", true)
+                    ))
+                }
+                tools.add(AppTool(
+                    name = obj.optString("name", ""),
+                    description = obj.optString("description", ""),
+                    params = params,
+                    method = obj.optString("method", "GET"),
+                    endpoint = obj.optString("endpoint", "")
+                ))
+            }
+            tools
+        } catch (e: RemoteException) {
+            Log.e(TAG, "Remote exception in getAppTools()", e)
+            emptyList()
+        }
+    }
+    
+    /**
+     * Call a tool on a mesh app.
+     * 
+     * @param appName App name (e.g., "horizon")
+     * @param toolName Tool name (e.g., "get_mission_summary")
+     * @param params Tool parameters
+     * @return JSON response from the tool
+     */
+    suspend fun callTool(
+        appName: String,
+        toolName: String,
+        params: Map<String, Any> = emptyMap()
+    ): JSONObject = withContext(Dispatchers.IO) {
+        val service = connector.getService()
+            ?: throw AtmosphereNotConnectedException()
+        
+        try {
+            val paramsJson = JSONObject().apply {
+                params.forEach { (k, v) -> put(k, v) }
+            }.toString()
+            
+            val responseJson = service.callTool(appName, toolName, paramsJson)
+            JSONObject(responseJson)
+        } catch (e: RemoteException) {
+            Log.e(TAG, "Remote exception in callTool()", e)
+            JSONObject().apply {
+                put("error", true)
+                put("message", "Connection lost: ${e.message}")
+            }
+        }
+    }
+    
     // ========================== RAG API ==========================
     
     /**
@@ -1248,6 +1347,31 @@ data class VisionStatus(
     val numClasses: Int = 0,
     val inputSize: Int = 0,
     val confidenceThreshold: Float = 0.7f
+)
+
+// ============================================================================
+// Mesh App Data Classes
+// ============================================================================
+
+data class MeshApp(
+    val name: String,
+    val description: String,
+    val toolCount: Int
+)
+
+data class AppTool(
+    val name: String,
+    val description: String,
+    val params: List<ToolParam>,
+    val method: String,
+    val endpoint: String
+)
+
+data class ToolParam(
+    val name: String,
+    val type: String,
+    val description: String,
+    val required: Boolean
 )
 
 // ============================================================================

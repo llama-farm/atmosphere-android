@@ -3,8 +3,8 @@ package com.llamafarm.atmosphere.horizon
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.llamafarm.atmosphere.network.ConnectionState
-import com.llamafarm.atmosphere.viewmodel.AtmosphereViewModel
+import com.llamafarm.atmosphere.sdk.AtmosphereClient
+import com.llamafarm.atmosphere.sdk.MeshStatus
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 
@@ -13,7 +13,7 @@ private const val TAG = "HorizonVM"
 class HorizonViewModel : ViewModel() {
 
     private var repo: HorizonRepository? = null
-    private var atmosphereVm: AtmosphereViewModel? = null
+    private var client: AtmosphereClient? = null
     private var refreshJobs = mutableListOf<Job>()
 
     // ── UI State ─────────────────────────────────────────────────────────────
@@ -71,17 +71,17 @@ class HorizonViewModel : ViewModel() {
 
     // ── Init ─────────────────────────────────────────────────────────────────
 
-    fun initialize(atmosphereViewModel: AtmosphereViewModel) {
+    fun initialize(atmosphereClient: AtmosphereClient) {
         if (repo != null) return
-        atmosphereVm = atmosphereViewModel
-        repo = HorizonRepository(atmosphereViewModel)
+        client = atmosphereClient
+        repo = HorizonRepository(atmosphereClient)
 
         // Watch mesh connection state
         viewModelScope.launch {
-            atmosphereViewModel.relayConnectionState.collect { state ->
-                _connectivity.value = when (state) {
-                    ConnectionState.CONNECTED -> HorizonConnectivity.CONNECTED
-                    ConnectionState.CONNECTING -> HorizonConnectivity.DEGRADED
+            atmosphereClient.meshStatusFlow().collect { status ->
+                _connectivity.value = when {
+                    status.connected -> HorizonConnectivity.CONNECTED
+                    status.relayConnected -> HorizonConnectivity.DEGRADED
                     else -> HorizonConnectivity.OFFLINE
                 }
             }
@@ -229,6 +229,7 @@ class HorizonViewModel : ViewModel() {
 
     override fun onCleared() {
         refreshJobs.forEach { it.cancel() }
+        client?.disconnect()
         super.onCleared()
     }
 }

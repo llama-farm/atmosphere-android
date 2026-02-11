@@ -927,6 +927,111 @@ class AtmosphereBinderService : Service() {
             }
         }
         
+        // ========================== Mesh App / Tool API Implementation ==========================
+        
+        override fun getApps(): String {
+            Log.d(TAG, "getApps() called")
+            
+            return try {
+                val registry = com.llamafarm.atmosphere.apps.AppRegistry.getInstance()
+                val allCaps = registry.getAppCapabilities()
+                
+                // Group by app name
+                val appMap = mutableMapOf<String, MutableList<com.llamafarm.atmosphere.apps.AppCapability>>()
+                allCaps.forEach { cap ->
+                    appMap.getOrPut(cap.appName) { mutableListOf() }.add(cap)
+                }
+                
+                val appsArray = JSONArray()
+                appMap.forEach { (appName, caps) ->
+                    val toolCount = caps.sumOf { it.tools.size }
+                    val desc = caps.firstOrNull()?.description ?: ""
+                    appsArray.put(JSONObject().apply {
+                        put("name", appName)
+                        put("description", desc)
+                        put("toolCount", toolCount)
+                    })
+                }
+                
+                appsArray.toString()
+            } catch (e: Exception) {
+                Log.e(TAG, "getApps() error", e)
+                JSONArray().toString()
+            }
+        }
+        
+        override fun getAppTools(appName: String?): String {
+            Log.d(TAG, "getAppTools() called: appName=$appName")
+            
+            if (appName.isNullOrBlank()) {
+                return JSONArray().toString()
+            }
+            
+            return try {
+                val registry = com.llamafarm.atmosphere.apps.AppRegistry.getInstance()
+                val tools = registry.getToolsForApp(appName)
+                
+                val toolsArray = JSONArray()
+                tools.forEach { (name, tool) ->
+                    toolsArray.put(JSONObject().apply {
+                        put("name", name)
+                        put("description", tool.description)
+                        put("method", tool.endpoint.method)
+                        put("endpoint", tool.endpoint.path)
+                        put("params", JSONArray().apply {
+                            tool.parameters.forEach { p ->
+                                put(JSONObject().apply {
+                                    put("name", p.name)
+                                    put("type", p.type)
+                                    put("description", p.description)
+                                    put("required", p.required)
+                                })
+                            }
+                        })
+                    })
+                }
+                
+                toolsArray.toString()
+            } catch (e: Exception) {
+                Log.e(TAG, "getAppTools() error", e)
+                JSONArray().toString()
+            }
+        }
+        
+        override fun callTool(appName: String?, toolName: String?, paramsJson: String?): String {
+            Log.d(TAG, "callTool() called: app=$appName, tool=$toolName")
+            recordClientActivity(capability = "tool_call")
+            
+            if (appName.isNullOrBlank() || toolName.isNullOrBlank()) {
+                return errorJson("appName and toolName are required")
+            }
+            
+            return try {
+                val params = if (!paramsJson.isNullOrBlank()) JSONObject(paramsJson) else JSONObject()
+                val connector = ServiceManager.getConnector()
+                val svc = connector.getService()
+                
+                if (svc == null) {
+                    return errorJson("Atmosphere service not available")
+                }
+                
+                val latch = java.util.concurrent.CountDownLatch(1)
+                var result: JSONObject? = null
+                
+                svc.callTool(appName, toolName, params) { response ->
+                    result = response
+                    latch.countDown()
+                }
+                
+                latch.await(30, java.util.concurrent.TimeUnit.SECONDS)
+                
+                result?.toString() ?: errorJson("Timeout waiting for tool response")
+            } catch (e: Exception) {
+                Log.e(TAG, "callTool() error", e)
+                errorJson("Tool call failed: ${e.message}")
+            }
+        }
+        
         override fun isVisionReady(): Boolean {
             return try {
                 val app = applicationContext as? AtmosphereApplication

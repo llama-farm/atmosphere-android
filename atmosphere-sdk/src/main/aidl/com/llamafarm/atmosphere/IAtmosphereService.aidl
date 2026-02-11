@@ -192,9 +192,9 @@ interface IAtmosphereService {
     void setVisionConfidenceThreshold(float threshold);
     
     /**
-     * Send feedback on a vision detection result for model training.
+     * Send feedback on a vision detection for model training.
      * 
-     * @param feedbackJson JSON with detection feedback: {detection_id?, correct, corrected_label?, image_base64?}
+     * @param feedbackJson JSON with detection_id, correct (boolean), corrected_label, image_base64
      * @return JSON result with success/error
      */
     String sendVisionFeedback(String feedbackJson);
@@ -221,4 +221,31 @@ interface IAtmosphereService {
      * @return true if vision model loaded and ready
      */
     boolean isVisionReady();
+    
+    // ========================== Mesh App / Tool API ==========================
+    
+    /**
+     * Get all available mesh apps.
+     * 
+     * @return JSON array of app objects: [{name, description, toolCount}]
+     */
+    String getApps();
+    
+    /**
+     * Get tools exposed by a specific mesh app.
+     * 
+     * @param appName App name (e.g., "horizon")
+     * @return JSON array of tool objects: [{name, description, params, method, endpoint}]
+     */
+    String getAppTools(String appName);
+    
+    /**
+     * Call a tool on a mesh app.
+     * 
+     * @param appName App name (e.g., "horizon")
+     * @param toolName Tool name (e.g., "get_mission_summary")
+     * @param paramsJson JSON object with tool parameters
+     * @return JSON response from the tool
+     */
+    String callTool(String appName, String toolName, String paramsJson);
 }

@@ -3,7 +3,6 @@ package com.llamafarm.atmosphere.horizon
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -15,20 +14,12 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
-import com.llamafarm.atmosphere.viewmodel.AtmosphereViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HorizonScreen(
-    atmosphereViewModel: AtmosphereViewModel,
-    horizonViewModel: HorizonViewModel = viewModel()
+    horizonViewModel: HorizonViewModel
 ) {
-    // Initialize once
-    LaunchedEffect(atmosphereViewModel) {
-        horizonViewModel.initialize(atmosphereViewModel)
-    }
-
     val selectedTab by horizonViewModel.selectedTab.collectAsState()
     val connectivity by horizonViewModel.connectivity.collectAsState()
     val mission by horizonViewModel.mission.collectAsState()

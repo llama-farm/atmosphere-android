@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <queries>
+        <package android:name="com.llamafarm.atmosphere" />
+        <package android:name="com.llamafarm.atmosphere.debug" />
+        <intent>
+            <action android:name="com.llamafarm.atmosphere.BIND" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="HORIZON"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Horizon">
+        <activity
+            android:name=".HorizonActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Horizon">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

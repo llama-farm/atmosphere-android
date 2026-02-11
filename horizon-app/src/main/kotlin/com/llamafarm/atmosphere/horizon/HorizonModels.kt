@@ -18,18 +18,30 @@ data class MissionSummary(
     val groundSpeed: String = "—"
 ) {
     companion object {
-        fun fromJson(j: JSONObject): MissionSummary = MissionSummary(
-            callsign = j.optString("callsign", "REACH 421"),
-            aircraft = j.optString("aircraft", "C-17A"),
-            route = j.optString("route", "KDOV → OKBK"),
-            phase = j.optString("phase", "EN ROUTE"),
-            position = j.optString("position", "—"),
-            altitude = j.optString("altitude", "—"),
-            fuel = j.optString("fuel", "—"),
-            cargo = j.optString("cargo", "—"),
-            pax = j.optString("pax", "—"),
-            groundSpeed = j.optString("ground_speed", "—")
-        )
+        fun fromJson(j: JSONObject): MissionSummary {
+            val cargoLbs = j.opt("cargo_lbs")
+            val cargoStr = when (cargoLbs) {
+                is Number -> "%,d lbs".format(cargoLbs.toLong())
+                else -> j.optString("cargo", "—")
+            }
+            val paxVal = j.opt("pax")
+            val paxStr = when (paxVal) {
+                is Number -> paxVal.toInt().toString()
+                else -> paxVal?.toString() ?: "—"
+            }
+            return MissionSummary(
+                callsign = j.optString("callsign", "REACH 421"),
+                aircraft = j.optString("aircraft", "C-17A"),
+                route = j.optString("route", "KDOV → OKBK"),
+                phase = j.optString("phase", "EN ROUTE"),
+                position = j.optString("position", "—"),
+                altitude = j.optString("altitude", "—"),
+                fuel = j.optString("fuel_remaining_hrs", j.optString("fuel", "—")),
+                cargo = cargoStr,
+                pax = paxStr,
+                groundSpeed = j.optString("ground_speed", "—")
+            )
+        }
     }
 }
 
@@ -132,15 +144,25 @@ data class HilItem(
     val timestamp: Long = 0
 ) {
     companion object {
-        fun fromJson(j: JSONObject): HilItem = HilItem(
-            id = j.optString("id", ""),
-            title = j.optString("title", ""),
-            description = j.optString("description", ""),
-            source = j.optString("source", ""),
-            urgency = j.optString("urgency", "normal"),
-            proposedAction = j.optString("proposed_action", ""),
-            timestamp = j.optLong("timestamp", 0)
-        )
+        fun fromJson(j: JSONObject): HilItem {
+            val action = j.optJSONObject("action")
+            val message = j.optJSONObject("message")
+            val msgContent = message?.optString("content", "") ?: ""
+            return HilItem(
+                id = action?.optString("id", "") ?: j.optString("id", ""),
+                title = action?.optString("decision_required", "")?.takeIf { it.isNotEmpty() }
+                    ?: msgContent.take(80).ifEmpty { j.optString("title", "") },
+                description = msgContent.ifEmpty { j.optString("description", "") },
+                source = if (message != null) {
+                    val sender = message.optString("sender", "")
+                    val channel = message.optString("channel", "")
+                    if (sender.isNotEmpty() && channel.isNotEmpty()) "$sender in $channel" else sender
+                } else j.optString("source", ""),
+                urgency = action?.optString("hil_priority", "normal") ?: j.optString("urgency", "normal"),
+                proposedAction = action?.optString("draft_response", "") ?: j.optString("proposed_action", ""),
+                timestamp = j.optLong("timestamp", 0)
+            )
+        }
 
         fun listFromJson(arr: JSONArray): List<HilItem> =
             (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.let(::fromJson) }
@@ -154,12 +176,27 @@ data class HandledItem(
     val timestamp: Long = 0
 ) {
     companion object {
-        fun fromJson(j: JSONObject): HandledItem = HandledItem(
-            id = j.optString("id", ""),
-            title = j.optString("title", ""),
-            action = j.optString("action", ""),
-            timestamp = j.optLong("timestamp", 0)
-        )
+        fun fromJson(j: JSONObject): HandledItem {
+            val actionObj = j.optJSONObject("action")
+            val messageObj = j.optJSONObject("message")
+            return if (actionObj != null) {
+                val content = messageObj?.optString("content", "") ?: ""
+                HandledItem(
+                    id = actionObj.optString("id", ""),
+                    title = content.take(80),
+                    action = if (actionObj.optBoolean("auto_handled", false)) "Auto-handled" 
+                             else actionObj.optString("reasoning", "Handled"),
+                    timestamp = 0
+                )
+            } else {
+                HandledItem(
+                    id = j.optString("id", ""),
+                    title = j.optString("title", ""),
+                    action = j.optString("action", ""),
+                    timestamp = j.optLong("timestamp", 0)
+                )
+            }
+        }
 
         fun listFromJson(arr: JSONArray): List<HandledItem> =
             (0 until arr.length()).mapNotNull { arr.optJSONObject(it)?.let(::fromJson) }
@@ -179,11 +216,11 @@ data class IntelBrief(
     companion object {
         fun fromJson(j: JSONObject): IntelBrief = IntelBrief(
             id = j.optString("id", ""),
-            threatAssessment = j.optString("threat_assessment", ""),
+            threatAssessment = j.optString("summary", j.optString("threat_assessment", "")),
             weather = j.optString("weather", ""),
             notams = j.optString("notams", ""),
             recommendations = j.optString("recommendations", ""),
-            generatedAt = j.optLong("generated_at", 0)
+            generatedAt = j.optLong("generated_at", j.optLong("timestamp", 0))
         )
     }
 }
@@ -201,7 +238,7 @@ data class IntelItem(
             id = j.optString("id", ""),
             title = j.optString("title", ""),
             category = j.optString("category", ""),
-            summary = j.optString("summary", ""),
+            summary = j.optString("content", j.optString("summary", "")),
             source = j.optString("source", ""),
             timestamp = j.optLong("timestamp", 0)
         )
