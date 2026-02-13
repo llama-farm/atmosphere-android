@@ -203,6 +203,9 @@ class AtmosphereService : Service() {
     // Local inference engine
     private var localInferenceEngine: LocalInferenceEngine? = null
     
+    // Sensor request handler for responding to mesh sensor requests
+    private var sensorRequestHandler: com.llamafarm.atmosphere.capabilities.SensorRequestHandler? = null
+    
     // Pending inference requests: requestId -> callback
     private val pendingRequests = ConcurrentHashMap<String, (String?, String?) -> Unit>()
     
@@ -1120,6 +1123,108 @@ class AtmosphereService : Service() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start CRDT mesh", e)
+            // Start polling for sensor requests
+            startSensorRequestPolling()
+
+        }
+    }
+
+    // Sensor request handler
+    private var sensorRequestHandler: com.llamafarm.atmosphere.capabilities.SensorRequestHandler? = null
+    
+    /**
+     * Start polling _requests collection for sensor data requests.
+     * Responds to sensor requests via _responses collection.
+     */
+    private fun startSensorRequestPolling() {
+        sensorRequestHandler = com.llamafarm.atmosphere.capabilities.SensorRequestHandler(applicationContext)
+        
+        serviceScope.launch {
+            while (isActive && atmosphereHandle != 0L) {
+                delay(2000) // Poll every 2 seconds
+                
+                try {
+                    // Query _requests collection for unhandled sensor requests
+                    val requestsJson = AtmosphereNative.query(atmosphereHandle, "_requests")
+                    val requestsArray = org.json.JSONArray(requestsJson)
+                    
+                    for (i in 0 until requestsArray.length()) {
+                        val request = requestsArray.getJSONObject(i)
+                        val requestId = request.optString("request_id", "")
+                        val capabilityId = request.optString("capability_id", "")
+                        val status = request.optString("status", "pending")
+                        
+                        // Only handle sensor requests that are pending
+                        if (status == "pending" && capabilityId.startsWith("sensor:")) {
+                            handleSensorRequest(requestId, request)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error polling sensor requests: ${e.message}")
+                }
+            }
+        }
+    }
+    
+    /**
+     * Handle a single sensor request.
+     */
+    private fun handleSensorRequest(requestId: String, request: org.json.JSONObject) {
+        serviceScope.launch {
+            try {
+                val capabilityId = request.getString("capability_id")
+                
+                // Parse params
+                val params = mutableMapOf<String, Any>()
+                if (request.has("params")) {
+                    val paramsObj = request.getJSONObject("params")
+                    paramsObj.keys().forEach { key ->
+                        params[key] = paramsObj.get(key)
+                    }
+                }
+                
+                Log.i(TAG, "📡 Handling sensor request: $capabilityId (id=$requestId)")
+                
+                // Use SensorRequestHandler to get sensor data
+                val responseData = sensorRequestHandler?.handleRequest(requestId, capabilityId, params)
+                
+                // Insert response into _responses collection
+                val responseDoc = org.json.JSONObject().apply {
+                    put("request_id", requestId)
+                    put("status", "success")
+                    put("data", responseData)
+                    put("timestamp", System.currentTimeMillis() / 1000)
+                }
+                
+                AtmosphereNative.insert(atmosphereHandle, "_responses", requestId, responseDoc.toString())
+                Log.i(TAG, "✅ Sensor response sent for $requestId: ${responseData?.length() ?: 0} bytes")
+                
+                // Update request status to completed
+                request.put("status", "completed")
+                AtmosphereNative.insert(atmosphereHandle, "_requests", requestId, request.toString())
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to handle sensor request $requestId", e)
+                
+                // Send error response
+                val errorDoc = org.json.JSONObject().apply {
+                    put("request_id", requestId)
+                    put("status", "error")
+                    put("error", e.message ?: "Unknown error")
+                    put("timestamp", System.currentTimeMillis() / 1000)
+                }
+                
+                try {
+                    AtmosphereNative.insert(atmosphereHandle, "_responses", requestId, errorDoc.toString())
+                    
+                    // Update request status to failed
+                    request.put("status", "failed")
+                    request.put("error", e.message)
+                    AtmosphereNative.insert(atmosphereHandle, "_requests", requestId, request.toString())
+                } catch (e2: Exception) {
+                    Log.e(TAG, "Failed to send error response", e2)
+                }
+            }
         }
     }
 
@@ -1159,6 +1264,9 @@ class AtmosphereService : Service() {
                 
                 // 3. Register text embedding capability
                 registerEmbeddingCapability(peerId, deviceModel, deviceInfo)
+
+                // 4. Detect and register all phone sensors as mesh capabilities
+                registerSensorCapabilities(peerId, deviceModel, deviceInfo)
 
                 // Register device status doc
                 val statusDoc = org.json.JSONObject().apply {
@@ -1356,6 +1464,102 @@ class AtmosphereService : Service() {
             }
         }
 
+        /**
+         * Detect and register all phone sensors as mesh capabilities.
+         * Transforms the phone into a sensor node - location, motion, environment, etc.
+         */
+        private suspend fun registerSensorCapabilities(peerId: String, deviceModel: String, deviceInfo: org.json.JSONObject) {
+            val handle = atmosphereHandle
+            if (handle == 0L) return
+            
+            try {
+                // Detect all available sensors
+                val sensors = com.llamafarm.atmosphere.capabilities.SensorCapabilityDetector.detectAll(applicationContext)
+                
+                Log.i(TAG, "🔍 Detected ${sensors.size} sensor capabilities")
+                
+                for (sensor in sensors) {
+                    try {
+                        // Convert to CRDT capability document
+                        val sensorDoc = org.json.JSONObject().apply {
+                            put("_id", sensor.id)
+                            put("peer_id", peerId)
+                            put("peer_name", deviceModel)
+                            put("capability_type", sensor.type)
+                            put("name", sensor.name)
+                            put("category", sensor.category)
+                            put("available", sensor.available)
+                            
+                            // Add permission info if required
+                            sensor.requiresPermission?.let { 
+                                put("requires_permission", it)
+                            }
+                            
+                            // Add device info
+                            put("device_info", deviceInfo)
+                            
+                            // Add sensor-specific metadata
+                            val metadataObj = org.json.JSONObject()
+                            for ((key, value) in sensor.metadata) {
+                                when (value) {
+                                    is List<*> -> metadataObj.put(key, org.json.JSONArray(value))
+                                    is Map<*, *> -> {
+                                        val mapObj = org.json.JSONObject()
+                                        (value as Map<String, Any>).forEach { (k, v) ->
+                                            mapObj.put(k, v)
+                                        }
+                                        metadataObj.put(key, mapObj)
+                                    }
+                                    else -> metadataObj.put(key, value)
+                                }
+                            }
+                            put("metadata", metadataObj)
+                            
+                            // Add standard capability metadata
+                            put("cost", org.json.JSONObject().apply {
+                                put("local", true)
+                                put("estimated_cost", 0.0)
+                                put("battery_impact", when(sensor.category) {
+                                    "location" -> 0.3
+                                    "motion" -> 0.1
+                                    "environment" -> 0.1
+                                    "vision" -> 0.4
+                                    "audio" -> 0.3
+                                    else -> 0.1
+                                })
+                            })
+                            
+                            put("status", org.json.JSONObject().apply {
+                                put("available", sensor.available)
+                                put("requestable", true) // Supports request/response pattern
+                                put("last_seen", System.currentTimeMillis() / 1000)
+                            })
+                            
+                            put("hops", 0)
+                            put("timestamp", System.currentTimeMillis())
+                        }
+                        
+                        AtmosphereNative.insert(handle, "_capabilities", sensor.id, sensorDoc.toString())
+                        Log.d(TAG, "✅ Registered sensor: ${sensor.id} (${sensor.name})")
+                        
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to register sensor ${sensor.id}", e)
+                    }
+                }
+                
+                // Summary log
+                val byCategory = sensors.groupBy { it.category }
+                val summary = byCategory.map { (category, items) ->
+                    "$category: ${items.size}"
+                }.joinToString(", ")
+                
+                Log.i(TAG, "📡 Sensor Capabilities: $summary (total: ${sensors.size})")
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to detect sensor capabilities", e)
+            }
+        }
+
     private fun registerDefaultCapabilities() {
         try {
             // Register camera capability
@@ -1406,6 +1610,9 @@ class AtmosphereService : Service() {
             // Cleanup local inference
             localInferenceEngine?.destroy()
             localInferenceEngine = null
+            
+            // Cleanup sensor request handler
+            sensorRequestHandler = null
             
             // Stop Rust core mesh
             if (atmosphereHandle != 0L) {
