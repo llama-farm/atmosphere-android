@@ -2,7 +2,6 @@ package com.llamafarm.atmosphere.capabilities
 
 import android.content.Context
 import android.util.Log
-import com.llamafarm.atmosphere.network.MeshConnection
 import com.llamafarm.atmosphere.mesh.ModelCatalog
 import com.llamafarm.atmosphere.vision.VisionModelManager
 import com.llamafarm.atmosphere.core.GossipManager
@@ -38,9 +37,6 @@ class MeshCapabilityHandler(
     private var voiceCapability: VoiceCapability? = null
     private var cameraCapability: CameraCapability? = null
     private var visionCapability: com.llamafarm.atmosphere.vision.VisionCapability? = null
-    
-    // Mesh connection for sending/receiving
-    private var meshConnection: MeshConnection? = null
     
     // Model catalog and transfer
     private val modelCatalog = ModelCatalog()
@@ -153,24 +149,11 @@ class MeshCapabilityHandler(
     }
     
     /**
-     * Set the mesh connection for sending capability announcements.
+     * LEGACY - Stub for backwards compatibility. Capabilities now in CRDT _capabilities collection.
      */
-    fun setMeshConnection(connection: MeshConnection) {
-        meshConnection = connection
-        
-        // Configure vision capability mesh sender
-        visionCapability?.setMeshSender { message ->
-            scope.launch {
-                try {
-                    connection.sendMessage(message)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to send vision message", e)
-                }
-            }
-        }
-        
-        // Announce capabilities to mesh
-        announceCapabilities()
+    fun setMeshConnection(connection: Any) {
+        // No-op: Capabilities managed via CRDT mesh, not relay
+        Log.d(TAG, "setMeshConnection called but ignored (CRDT mesh handles capabilities)")
     }
     
     /**
@@ -263,59 +246,17 @@ class MeshCapabilityHandler(
     fun getModelCatalog(): ModelCatalog = modelCatalog
     
     /**
-     * Clear the mesh connection.
+     * LEGACY - Stub for backwards compatibility. Capabilities now in CRDT _capabilities collection.
      */
     fun clearMeshConnection() {
-        meshConnection = null
+        // No-op: Capabilities managed via CRDT mesh, not relay
     }
     
     /**
-     * Announce local capabilities to the mesh.
+     * LEGACY - Capabilities now announced via CRDT _capabilities collection.
      */
     private fun announceCapabilities() {
-        val connection = meshConnection ?: return
-        
-        val announcement = JSONObject().apply {
-            put("type", "capability_announce")
-            put("node_id", nodeId)
-            put("capabilities", JSONArray().apply {
-                localCapabilities.values.forEach { cap ->
-                    put(JSONObject().apply {
-                        put("name", cap.name)
-                        put("description", cap.description)
-                        put("version", cap.version)
-                        put("requires_approval", cap.requiresApproval)
-                        put("params", JSONObject(cap.params))
-                    })
-                }
-            })
-            
-            // Add vision model capabilities
-            val visionManager = visionModelManager
-            if (visionManager != null) {
-                val loadedModels = visionManager.installedModels.value
-                if (loadedModels.isNotEmpty()) {
-                    put("vision_models", JSONArray().apply {
-                        loadedModels.forEach { modelMetadata ->
-                            put(JSONObject().apply {
-                                put("model_id", modelMetadata.modelId)
-                                put("version", modelMetadata.version)
-                                put("loaded", true)
-                            })
-                        }
-                    })
-                }
-            }
-        }
-        
-        scope.launch {
-            try {
-                connection.sendMessage(announcement)
-                Log.i(TAG, "Announced ${localCapabilities.size} capabilities + vision models to mesh")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to announce capabilities", e)
-            }
-        }
+        // No-op: Capabilities managed via CRDT mesh, not relay
     }
     
     /**
@@ -478,7 +419,6 @@ class MeshCapabilityHandler(
         voiceCapability?.destroy()
         cameraCapability?.destroy()
         visionCapability?.destroy()
-        meshConnection = null
         localCapabilities.clear()
     }
 }

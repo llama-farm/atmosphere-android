@@ -17,7 +17,6 @@ sealed class AtmosphereException(message: String) : Exception(message) {
     class CapabilityNotFound(message: String = "Capability not found") : AtmosphereException(message)
     class NodeNotRunning(message: String = "Node not running") : AtmosphereException(message)
     class SerializationError(message: String = "Serialization error") : AtmosphereException(message)
-    class MeshConnectionError(message: String = "Mesh connection error") : AtmosphereException(message)
 }
 
 /**
@@ -199,7 +198,7 @@ class AtmosphereNode private constructor(private val handle: Long) {
     fun joinMesh(endpoint: String, token: String) {
         val result = nativeJoinMesh(handle, endpoint, token)
         if (result != 0) {
-            throw AtmosphereException.MeshConnectionError("Failed to join mesh: error code $result")
+            throw AtmosphereException.NetworkError("Failed to join mesh: error code $result")
         }
     }
     

@@ -195,6 +195,36 @@ fun SettingsScreen(
             }
         }
 
+        // Daemon Section
+        item {
+            Text(
+                text = "Daemon (atmosphere-core)",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
+        }
+
+        item {
+            SettingsCard {
+                SettingsItem(
+                    title = "Daemon URL",
+                    subtitle = "http://127.0.0.1:11462 (via adb reverse)",
+                    icon = Icons.Default.Link,
+                    onClick = { /* Future: allow URL editing */ }
+                )
+                
+                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                
+                SettingsItem(
+                    title = "BigLlama Config",
+                    subtitle = "Configure Cloud/LAN inference routing",
+                    icon = Icons.Default.CloudQueue,
+                    onClick = { /* Future: BigLlama configuration */ }
+                )
+            }
+        }
+        
         // Permissions Section
         item {
             Text(

@@ -5,7 +5,6 @@ import android.util.Base64
 import android.util.Log
 import com.llamafarm.atmosphere.core.GossipManager
 import com.llamafarm.atmosphere.inference.ModelManager
-import com.llamafarm.atmosphere.network.MeshConnection
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import okhttp3.OkHttpClient
@@ -52,11 +51,11 @@ sealed class DownloadState {
 
 /**
  * Manages model transfers over the mesh.
- * Listens for model_catalog gossip, handles downloads via HTTP or WebSocket.
+ * Listens for model_catalog gossip, handles downloads via HTTP.
+ * WebSocket transfer removed - HTTP direct transfer only.
  */
 class ModelTransferService(
     private val context: Context,
-    private val meshConnection: MeshConnection,
     private val modelManager: ModelManager
 ) {
     
@@ -84,52 +83,12 @@ class ModelTransferService(
     }
     
     init {
-        // Listen for model_catalog gossip messages
-        scope.launch {
-            meshConnection.messages.collect { message ->
-                when (message) {
-                    is com.llamafarm.atmosphere.network.MeshMessage.CapabilityAnnounce -> {
-                        val sourceNodeId = message.sourceNodeId
-                        val announcement = message.announcement
-                        if (sourceNodeId != null && announcement != null) {
-                            handleCapabilityAnnounce(sourceNodeId, announcement)
-                        }
-                    }
-                    else -> { /* ignore other message types */ }
-                }
-            }
-        }
-        
+        // Model catalog updates now come from CRDT _capabilities collection
         // Periodic cleanup of expired catalog entries
         scope.launch {
             while (isActive) {
                 delay(60_000)  // Every minute
                 modelCatalog.cleanupExpired()
-            }
-        }
-    }
-    
-    /**
-     * Handle incoming capability announcement.
-     * Check if it contains a model_catalog.
-     */
-    private fun handleCapabilityAnnounce(sourceNodeId: String, announcement: JSONObject) {
-        // Check if this is a model_catalog message
-        val type = announcement.optString("type", "")
-        if (type == "model_catalog") {
-            val nodeName = announcement.optString("node_name", sourceNodeId)
-            modelCatalog.processCatalogMessage(sourceNodeId, nodeName, announcement)
-        }
-        
-        // Also check for model_catalog nested in capabilities (backward compat)
-        val capabilities = announcement.optJSONArray("capabilities")
-        if (capabilities != null) {
-            for (i in 0 until capabilities.length()) {
-                val cap = capabilities.optJSONObject(i) ?: continue
-                if (cap.optString("type") == "model_catalog") {
-                    val nodeName = announcement.optString("node_name", sourceNodeId)
-                    modelCatalog.processCatalogMessage(sourceNodeId, nodeName, cap)
-                }
             }
         }
     }
@@ -337,7 +296,7 @@ class ModelTransferService(
     }
     
     /**
-     * Download via WebSocket chunked transfer (relay).
+     * LEGACY - WebSocket transfer removed. Use HTTP transfer only.
      */
     private suspend fun downloadViaWebSocket(
         requestId: String,
@@ -345,47 +304,9 @@ class ModelTransferService(
         peer: PeerModelInfo
     ) = withContext(Dispatchers.IO) {
         val modelId = catalogEntry.modelId
-        
-        val destFile = File(modelsDir, "${catalogEntry.modelId}.${catalogEntry.format}")
-        val tempFile = File(modelsDir, "${catalogEntry.modelId}.${catalogEntry.format}.tmp")
-        
-        try {
-            // Check for resume
-            val resumeFromByte = if (tempFile.exists()) tempFile.length() else 0L
-            
-            // Send model_request via mesh
-            val requestMsg = JSONObject().apply {
-                put("type", "model_request")
-                put("request_id", requestId)
-                put("requester_node_id", gossipManager.nodeId)
-                put("target_node_id", peer.nodeId)
-                put("model_id", catalogEntry.modelId)
-                put("resume_from_byte", resumeFromByte)
-                put("transport", "websocket")
-            }
-            
-            meshConnection.sendMessage(requestMsg)
-            
-            // Wait for model_transfer_start response
-            // TODO: Implement WebSocket chunk receiving via MeshConnection message flow
-            // This is a simplified placeholder - full implementation would:
-            // 1. Listen for model_transfer_start message
-            // 2. Create chunk receiver coroutine
-            // 3. Process model_transfer_chunk messages
-            // 4. Send model_transfer_chunk_ack for each chunk
-            // 5. Verify and complete
-            
-            Log.w(TAG, "WebSocket transfer not fully implemented yet - use HTTP transfer for now")
-            updateDownloadState(modelId, DownloadState.Failed(modelId, "WebSocket transfer not implemented"))
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "WebSocket download failed for $modelId: ${e.message}", e)
-            tempFile.delete()
-            updateDownloadState(modelId, DownloadState.Failed(modelId, e.message ?: "Unknown error"))
-            modelCatalog.updatePeerReliability(peer.nodeId, success = false)
-        } finally {
-            activeDownloads.remove(requestId)
-        }
+        Log.w(TAG, "WebSocket transfer removed - use HTTP transfer only")
+        updateDownloadState(modelId, DownloadState.Failed(modelId, "WebSocket transfer removed"))
+        activeDownloads.remove(requestId)
     }
     
     /**

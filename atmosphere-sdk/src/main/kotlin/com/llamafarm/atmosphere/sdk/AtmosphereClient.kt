@@ -77,6 +77,7 @@ class AtmosphereClient private constructor(
     private var costUpdateCallback: ((CostMetrics) -> Unit)? = null
     private var streamCallbacks = mutableMapOf<String, (StreamChunk) -> Unit>()
     private var errorCallback: ((String, String) -> Unit)? = null
+    private var crdtChangeCallbacks = mutableMapOf<String, (docId: String, kind: String, docJson: String) -> Unit>()
     private var meshCallback: IAtmosphereCallback? = null
     
     /**
@@ -545,6 +546,13 @@ class AtmosphereClient private constructor(
                     errorMessage ?: "Unknown error"
                 )
             }
+            
+            override fun onCrdtChange(collection: String?, docId: String?, kind: String?, docJson: String?) {
+                collection ?: return
+                docId ?: return
+                crdtChangeCallbacks[collection]?.invoke(docId, kind ?: "updated", docJson ?: "{}")
+                crdtChangeCallbacks["*"]?.invoke(docId, kind ?: "updated", docJson ?: "{}")
+            }
         }
         
         try {
@@ -552,6 +560,101 @@ class AtmosphereClient private constructor(
         } catch (e: RemoteException) {
             Log.e(TAG, "Failed to register callback", e)
             meshCallback = null
+        }
+    }
+    
+    // ========================== CRDT Data Sync API ==========================
+    
+    /**
+     * Insert a document into a CRDT collection.
+     * @return Document ID
+     */
+    suspend fun crdtInsert(collection: String, doc: JSONObject): String? = withContext(Dispatchers.IO) {
+        val service = connector.getService() ?: throw AtmosphereNotConnectedException()
+        try {
+            service.crdtInsert(collection, doc.toString())
+        } catch (e: RemoteException) {
+            Log.e(TAG, "crdtInsert error", e)
+            null
+        }
+    }
+    
+    /**
+     * Query all documents in a CRDT collection.
+     */
+    suspend fun crdtQuery(collection: String): JSONArray = withContext(Dispatchers.IO) {
+        val service = connector.getService() ?: throw AtmosphereNotConnectedException()
+        try {
+            JSONArray(service.crdtQuery(collection) ?: "[]")
+        } catch (e: RemoteException) {
+            Log.e(TAG, "crdtQuery error", e)
+            JSONArray()
+        }
+    }
+    
+    /**
+     * Get a specific document by ID from a CRDT collection.
+     */
+    suspend fun crdtGet(collection: String, docId: String): JSONObject? = withContext(Dispatchers.IO) {
+        val service = connector.getService() ?: throw AtmosphereNotConnectedException()
+        try {
+            service.crdtGet(collection, docId)?.let { JSONObject(it) }
+        } catch (e: RemoteException) {
+            Log.e(TAG, "crdtGet error", e)
+            null
+        }
+    }
+    
+    /**
+     * Subscribe to changes on a CRDT collection.
+     */
+    suspend fun crdtSubscribe(collection: String, callback: (docId: String, kind: String, docJson: String) -> Unit) {
+        crdtChangeCallbacks[collection] = callback
+        ensureCallbackRegistered()
+        val service = connector.getService() ?: return
+        try {
+            service.crdtSubscribe(collection)
+        } catch (e: RemoteException) {
+            Log.e(TAG, "crdtSubscribe error", e)
+        }
+    }
+    
+    /**
+     * Unsubscribe from collection changes.
+     */
+    suspend fun crdtUnsubscribe(collection: String) {
+        crdtChangeCallbacks.remove(collection)
+        val service = connector.getService() ?: return
+        try {
+            service.crdtUnsubscribe(collection)
+        } catch (e: RemoteException) {
+            Log.e(TAG, "crdtUnsubscribe error", e)
+        }
+    }
+    
+    /**
+     * Get connected CRDT mesh peers.
+     */
+    suspend fun crdtPeers(): JSONArray = withContext(Dispatchers.IO) {
+        val service = connector.getService() ?: throw AtmosphereNotConnectedException()
+        try {
+            JSONArray(service.crdtPeers())
+        } catch (e: RemoteException) {
+            Log.e(TAG, "crdtPeers error", e)
+            JSONArray()
+        }
+    }
+    
+    /**
+     * Get CRDT mesh info.
+     */
+    suspend fun crdtInfo(): JSONObject = withContext(Dispatchers.IO) {
+        val service = connector.getService() ?: throw AtmosphereNotConnectedException()
+        try {
+            JSONObject(service.crdtInfo())
+        } catch (e: RemoteException) {
+            Log.e(TAG, "crdtInfo error", e)
+            JSONObject()
         }
     }
     
@@ -1146,6 +1249,7 @@ class AtmosphereClient private constructor(
         costUpdateCallback = null
         streamCallbacks.clear()
         errorCallback = null
+        crdtChangeCallbacks.clear()
         connector.disconnect()
     }
 }

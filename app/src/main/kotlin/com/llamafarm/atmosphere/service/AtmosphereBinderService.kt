@@ -63,6 +63,9 @@ class AtmosphereBinderService : Service() {
     private val thirdPartyCapabilities = mutableMapOf<String, AtmosphereCapability>()
     private var capabilityIdCounter = 0
     
+    // CRDT observer tracking: collection -> list of observer IDs
+    private val crdtObserverIds = mutableMapOf<String, MutableList<Int>>()
+    
     // RAG store for on-device knowledge retrieval
     private val ragStore = LocalRagStore()
     
@@ -126,73 +129,99 @@ class AtmosphereBinderService : Service() {
             }
             
             return try {
-                // Parse messages
                 val messages = JSONArray(messagesJson)
                 val app = applicationContext as? AtmosphereApplication
+                val crdtCore = getCrdtCore()
                 
-                // Check if connected to mesh - prefer mesh routing for better models
-                val meshConnection = app?.meshConnection
-                val connectionState = meshConnection?.connectionState?.value
-                val isConnectedToMesh = connectionState?.name == "CONNECTED"
-                
-                // Get the real service for mesh routing
-                val connector = ServiceManager.getConnector()
-                val atmosphereService = connector.getService()
-                val meshConnected = atmosphereService?.isConnected() == true
-                
-                if (meshConnected && atmosphereService != null) {
-                    Log.d(TAG, "Routing chat through mesh via AtmosphereService...")
-                    
-                    // Extract the last user message as prompt
-                    var prompt = ""
-                    for (i in messages.length() - 1 downTo 0) {
-                        val msg = messages.getJSONObject(i)
-                        if (msg.optString("role") == "user") {
-                            prompt = msg.optString("content", "")
-                            break
-                        }
+                // Extract last user message for routing
+                var prompt = ""
+                for (i in messages.length() - 1 downTo 0) {
+                    val msg = messages.getJSONObject(i)
+                    if (msg.optString("role") == "user") {
+                        prompt = msg.optString("content", "")
+                        break
                     }
+                }
+                
+                if (prompt.isEmpty()) {
+                    return errorJson("No user message found")
+                }
+                
+                // Step 1: Semantic router decides WHERE to send
+                val router = app?.semanticRouter
+                val routeResult = if (router != null) {
+                    runBlocking { router.route(prompt) }
+                } else null
+                
+                val targetNodeId = routeResult?.capability?.nodeId
+                val targetIsLocal = targetNodeId == null || targetNodeId == crdtCore?.peerId
+                
+                Log.d(TAG, "Router decision: target=$targetNodeId, local=$targetIsLocal, " +
+                    "capability=${routeResult?.capability?.capabilityId}, " +
+                    "score=${routeResult?.explanation}")
+                
+                if (targetIsLocal) {
+                    // Router says run locally (on-device GGUF)
+                    Log.d(TAG, "Semantic router → local inference")
+                    executeLocalInference(app, messages, model)
+                } else if (crdtCore != null) {
+                    // Router says send to remote peer → route via CRDT mesh
+                    Log.d(TAG, "Semantic router → CRDT mesh → $targetNodeId")
                     
-                    if (prompt.isEmpty()) {
-                        return errorJson("No user message found")
-                    }
+                    // Extract project_path from the routing decision's capability
+                    val projectPath = routeResult?.capability?.projectPath ?: "discoverable/atmosphere-universal"
+                    Log.d(TAG, "Routed to project: $projectPath (capability=${routeResult?.capability?.label})")
                     
-                    // Use blocking coroutine to send through mesh
-                    val result = runBlocking {
-                        var response: String? = null
-                        var error: String? = null
-                        val latch = java.util.concurrent.CountDownLatch(1)
-                        
-                        atmosphereService.sendLlmRequest(prompt, model) { resp, err ->
-                            response = resp
-                            error = err
+                    val requestId = java.util.UUID.randomUUID().toString()
+                    crdtCore.insert("_requests", mapOf<String, Any>(
+                        "_id" to requestId,
+                        "request_id" to requestId,
+                        "prompt" to prompt,
+                        "messages" to messagesJson,
+                        "model" to (model ?: "auto"),
+                        "target_peer" to (targetNodeId ?: ""),
+                        "project_path" to projectPath,
+                        "status" to "pending",
+                        "timestamp" to System.currentTimeMillis(),
+                        "source" to "android"
+                    ))
+                    
+                    // Wait for response via CRDT _responses (30s timeout)
+                    val latch = java.util.concurrent.CountDownLatch(1)
+                    var responseContent: String? = null
+                    var responseModel: String? = null
+                    
+                    val observerId = crdtCore.observe("_responses") { event ->
+                        val doc = crdtCore.get("_responses", event.docId)
+                        if (doc?.get("request_id") == requestId) {
+                            responseContent = doc["content"]?.toString()
+                            responseModel = doc["model"]?.toString()
                             latch.countDown()
                         }
-                        
-                        latch.await(30, java.util.concurrent.TimeUnit.SECONDS)
-                        
-                        if (!error.isNullOrEmpty()) {
-                            errorJson("Mesh error: $error")
-                        } else if (!response.isNullOrEmpty()) {
-                            JSONObject().apply {
-                                put("choices", JSONArray().put(JSONObject().apply {
-                                    put("message", JSONObject().apply {
-                                        put("role", "assistant")
-                                        put("content", response)
-                                    })
-                                    put("finish_reason", "stop")
-                                }))
-                                put("model", model ?: "mesh-routed")
-                            }.toString()
-                        } else {
-                            errorJson("No response from mesh (timeout)")
-                        }
                     }
                     
-                    result
+                    val answered = latch.await(30, java.util.concurrent.TimeUnit.SECONDS)
+                    crdtCore.removeObserver(observerId)
+                    
+                    if (answered && !responseContent.isNullOrEmpty()) {
+                        JSONObject().apply {
+                            put("choices", JSONArray().put(JSONObject().apply {
+                                put("message", JSONObject().apply {
+                                    put("role", "assistant")
+                                    put("content", responseContent)
+                                })
+                                put("finish_reason", "stop")
+                            }))
+                            put("model", responseModel ?: model ?: "mesh-routed")
+                            put("routed_via", "crdt-mesh")
+                            put("target_peer", targetNodeId)
+                        }.toString()
+                    } else {
+                        errorJson("No response from mesh peer $targetNodeId (30s timeout)")
+                    }
                 } else {
-                    // Use local inference
-                    Log.d(TAG, "Using local inference (not connected to mesh)")
+                    // No CRDT core available, local inference only option
+                    Log.d(TAG, "No CRDT mesh available → local inference")
                     executeLocalInference(app, messages, model)
                 }
             } catch (e: Exception) {
@@ -307,11 +336,33 @@ class AtmosphereBinderService : Service() {
             
             val capabilities = mutableListOf<AtmosphereCapability>()
             
-            // TODO: Get capabilities from GossipManager/SemanticRouter with new API
-            // For now, return third-party and default capabilities
+            // Read from CRDT _capabilities collection (merged view from all mesh peers)
+            val crdtCore = getCrdtCore()
+            if (crdtCore != null) {
+                val crdtCaps = crdtCore.query("_capabilities")
+                crdtCaps.forEach { doc ->
+                    try {
+                        capabilities.add(AtmosphereCapability(
+                            id = doc["_id"]?.toString() ?: return@forEach,
+                            name = doc["name"]?.toString() ?: "unknown",
+                            type = doc["type"]?.toString() ?: "custom",
+                            nodeId = doc["nodeId"]?.toString() ?: "unknown",
+                            cost = (doc["cost"] as? Number)?.toFloat() ?: 0.5f,
+                            available = doc["available"] as? Boolean ?: true,
+                            metadata = doc["metadata"]?.toString() ?: "{}"
+                        ))
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to parse CRDT capability", e)
+                    }
+                }
+            }
             
-            // Add third-party registered capabilities
-            capabilities.addAll(thirdPartyCapabilities.values)
+            // Add third-party registered capabilities (not yet in CRDT)
+            thirdPartyCapabilities.values.forEach { cap ->
+                if (capabilities.none { it.id == cap.id }) {
+                    capabilities.add(cap)
+                }
+            }
             
             // If no capabilities, return defaults
             if (capabilities.isEmpty()) {
@@ -365,7 +416,7 @@ class AtmosphereBinderService : Service() {
                     put("connected", isConnected)
                     put("nodeId", nodeId)
                     put("meshId", service.getMeshId() ?: "")
-                    put("peerCount", service.getRelayPeerCount())
+                    put("peerCount", service.getCrdtPeerCount())
                     put("capabilities", totalCaps)
                     put("relayConnected", isConnected)
                 }.toString()
@@ -458,6 +509,23 @@ class AtmosphereBinderService : Service() {
                 )
                 
                 thirdPartyCapabilities[id] = capability
+                
+                // Insert into CRDT _capabilities collection (syncs to all peers automatically)
+                val crdtCore = getCrdtCore()
+                if (crdtCore != null) {
+                    val capData = mapOf<String, Any>(
+                        "_id" to id,
+                        "name" to capability.name,
+                        "type" to capability.type,
+                        "nodeId" to capability.nodeId,
+                        "cost" to capability.cost,
+                        "available" to capability.available,
+                        "metadata" to capability.metadata,
+                        "registered_at" to System.currentTimeMillis()
+                    )
+                    crdtCore.insert("_capabilities", capData)
+                    Log.i(TAG, "Registered capability in CRDT mesh: $id")
+                }
                 
                 // Notify mesh about new capability
                 broadcastCapabilityEvent(id, JSONObject().apply {
@@ -1007,25 +1075,57 @@ class AtmosphereBinderService : Service() {
             }
             
             return try {
-                val params = if (!paramsJson.isNullOrBlank()) JSONObject(paramsJson) else JSONObject()
-                val connector = ServiceManager.getConnector()
-                val svc = connector.getService()
+                val app = applicationContext as? AtmosphereApplication
+                val crdtCore = getCrdtCore()
                 
-                if (svc == null) {
-                    return errorJson("Atmosphere service not available")
+                // Semantic router finds which peer has this tool capability
+                val router = app?.semanticRouter
+                val routeResult = if (router != null) {
+                    runBlocking { router.route("$appName.$toolName") }
+                } else null
+                
+                val targetNodeId = routeResult?.capability?.nodeId
+                
+                Log.d(TAG, "Router decision for tool $appName.$toolName: target=$targetNodeId")
+                
+                if (crdtCore == null) {
+                    return errorJson("CRDT mesh not available")
                 }
                 
+                // Send tool request via CRDT mesh
+                val requestId = java.util.UUID.randomUUID().toString()
+                crdtCore.insert("_tool_requests", mapOf<String, Any>(
+                    "_id" to requestId,
+                    "request_id" to requestId,
+                    "app" to appName,
+                    "tool" to toolName,
+                    "params" to paramsJson.orEmpty(),
+                    "target_peer" to (targetNodeId ?: ""),
+                    "status" to "pending",
+                    "timestamp" to System.currentTimeMillis(),
+                    "source" to "android"
+                ))
+                
+                // Wait for response via CRDT _tool_responses (30s timeout)
                 val latch = java.util.concurrent.CountDownLatch(1)
-                var result: JSONObject? = null
+                var responseJson: String? = null
                 
-                svc.callTool(appName, toolName, params) { response ->
-                    result = response
-                    latch.countDown()
+                val observerId = crdtCore.observe("_tool_responses") { event ->
+                    val doc = crdtCore.get("_tool_responses", event.docId)
+                    if (doc?.get("request_id") == requestId) {
+                        responseJson = doc["result"]?.toString()
+                        latch.countDown()
+                    }
                 }
                 
-                latch.await(30, java.util.concurrent.TimeUnit.SECONDS)
+                val answered = latch.await(30, java.util.concurrent.TimeUnit.SECONDS)
+                crdtCore.removeObserver(observerId)
                 
-                result?.toString() ?: errorJson("Timeout waiting for tool response")
+                if (answered && !responseJson.isNullOrEmpty()) {
+                    responseJson!!
+                } else {
+                    errorJson("No response for $appName.$toolName from mesh (30s timeout)")
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "callTool() error", e)
                 errorJson("Tool call failed: ${e.message}")
@@ -1042,6 +1142,104 @@ class AtmosphereBinderService : Service() {
             } catch (e: Exception) {
                 Log.e(TAG, "isVisionReady() error", e)
                 false
+            }
+        }
+        
+        // ========================== CRDT Data Sync API Implementation ==========================
+        
+        override fun crdtInsert(collection: String?, docJson: String?): String? {
+            Log.d(TAG, "crdtInsert() called: collection=$collection")
+            if (collection.isNullOrBlank() || docJson.isNullOrBlank()) {
+                return null
+            }
+            return try {
+                val core = getCrdtCore() ?: return null
+                val json = JSONObject(docJson)
+                val data = mutableMapOf<String, Any>()
+                json.keys().forEach { key -> data[key] = json.get(key) }
+                core.insert(collection, data)
+            } catch (e: Exception) {
+                Log.e(TAG, "crdtInsert() error", e)
+                null
+            }
+        }
+        
+        override fun crdtQuery(collection: String?): String? {
+            if (collection.isNullOrBlank()) return "[]"
+            return try {
+                val core = getCrdtCore() ?: return "[]"
+                val docs = core.query(collection)
+                val arr = JSONArray()
+                docs.forEach { doc -> arr.put(JSONObject(doc)) }
+                arr.toString()
+            } catch (e: Exception) {
+                Log.e(TAG, "crdtQuery() error", e)
+                "[]"
+            }
+        }
+        
+        override fun crdtGet(collection: String?, docId: String?): String? {
+            if (collection.isNullOrBlank() || docId.isNullOrBlank()) return null
+            return try {
+                val core = getCrdtCore() ?: return null
+                val doc = core.get(collection, docId)
+                doc?.let { JSONObject(it).toString() }
+            } catch (e: Exception) {
+                Log.e(TAG, "crdtGet() error", e)
+                null
+            }
+        }
+        
+        override fun crdtSubscribe(collection: String?) {
+            if (collection.isNullOrBlank()) return
+            val core = getCrdtCore() ?: return
+            val observerId = core.observe(collection) { event ->
+                val doc = core.get(event.collection, event.docId)
+                val docJson = doc?.let { JSONObject(it).toString() } ?: "{}"
+                broadcastCrdtChange(event.collection, event.docId, event.kind, docJson)
+            }
+            crdtObserverIds.getOrPut(collection) { mutableListOf() }.add(observerId)
+        }
+        
+        override fun crdtUnsubscribe(collection: String?) {
+            if (collection.isNullOrBlank()) return
+            val core = getCrdtCore() ?: return
+            crdtObserverIds.remove(collection)?.forEach { id ->
+                core.removeObserver(id)
+            }
+        }
+        
+        override fun crdtPeers(): String {
+            return try {
+                val core = getCrdtCore() ?: return "[]"
+                val arr = JSONArray()
+                core.connectedPeers().forEach { p ->
+                    arr.put(JSONObject().apply {
+                        put("peer_id", p.peerId)
+                        put("transport", p.transport)
+                        put("last_seen", p.lastSeen)
+                    })
+                }
+                arr.toString()
+            } catch (e: Exception) {
+                Log.e(TAG, "crdtPeers() error", e)
+                "[]"
+            }
+        }
+        
+        override fun crdtInfo(): String {
+            return try {
+                val core = getCrdtCore()
+                JSONObject().apply {
+                    put("peer_id", core?.peerId ?: "unknown")
+                    put("app_id", core?.appId ?: "atmosphere")
+                    put("mesh_port", core?.listenPort ?: 0)
+                    put("peer_count", core?.connectedPeers()?.size ?: 0)
+                    put("daemon_type", "android-bigllama")
+                }.toString()
+            } catch (e: Exception) {
+                Log.e(TAG, "crdtInfo() error", e)
+                "{}"
             }
         }
     }
@@ -1244,6 +1442,29 @@ Question: $query
                 callbacks.getBroadcastItem(i).onError(errorCode, errorMessage)
             } catch (e: RemoteException) {
                 Log.w(TAG, "Failed to broadcast error to callback $i", e)
+            }
+        }
+        callbacks.finishBroadcast()
+    }
+    
+    /**
+     * Get the AtmosphereCore (CRDT engine) from the running AtmosphereService.
+     */
+    private fun getCrdtCore(): com.llamafarm.atmosphere.core.AtmosphereCore? {
+        val connector = ServiceManager.getConnector()
+        return connector.getService()?.getAtmosphereCore()
+    }
+    
+    /**
+     * Broadcast a CRDT change event to all registered callbacks.
+     */
+    private fun broadcastCrdtChange(collection: String, docId: String, kind: String, docJson: String) {
+        val count = callbacks.beginBroadcast()
+        for (i in 0 until count) {
+            try {
+                callbacks.getBroadcastItem(i).onCrdtChange(collection, docId, kind, docJson)
+            } catch (e: RemoteException) {
+                Log.w(TAG, "Failed to broadcast CRDT change to callback $i", e)
             }
         }
         callbacks.finishBroadcast()

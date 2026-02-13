@@ -165,8 +165,11 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
     implementation("androidx.camera:camera-view:$cameraxVersion")
     
-    // ML Kit Barcode Scanning for QR codes
+    // ML Kit Barcode Scanning for QR codes (scanning)
     implementation("com.google.mlkit:barcode-scanning:17.2.0")
+    
+    // ZXing for QR code generation
+    implementation("com.google.zxing:core:3.5.3")
     
     // OkHttp for WebSocket mesh connection
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

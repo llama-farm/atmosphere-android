@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import android.util.Log
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -24,7 +25,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.llamafarm.atmosphere.AtmosphereApplication
-import com.llamafarm.atmosphere.network.ConnectionState
+// ConnectionState removed — CRDT mesh
 import com.llamafarm.atmosphere.network.RoutingInfo
 import com.llamafarm.atmosphere.service.AtmosphereService
 import com.llamafarm.atmosphere.ui.components.StatusCard
@@ -50,7 +51,7 @@ fun HomeScreen(viewModel: AtmosphereViewModel) {
     val meshName by viewModel.meshName.collectAsState()
     val savedMeshName by viewModel.savedMeshName.collectAsState()
     val hasSavedMesh by viewModel.hasSavedMesh.collectAsState()
-    val connectionState by viewModel.relayConnectionState.collectAsState()
+    val crdtConnected by viewModel.crdtConnected.collectAsState()
     
     // Mesh events
     val meshEvents by viewModel.meshEvents.collectAsState()
@@ -99,7 +100,7 @@ fun HomeScreen(viewModel: AtmosphereViewModel) {
         
         // Log peer details
         relayPeers.forEachIndexed { i, peer ->
-            android.util.Log.d("HomeScreen", "Peer $i: ${peer.name} (${peer.nodeId.take(8)}...) - ${peer.capabilities.size} caps")
+            android.util.Log.d("HomeScreen", "Peer $i: ${peer.peerId.take(8)}...")
         }
     }
 
@@ -139,17 +140,22 @@ fun HomeScreen(viewModel: AtmosphereViewModel) {
         Spacer(modifier = Modifier.height(16.dp))
         
         // 🔗 MESH CONNECTION CARD
-        MeshConnectionCard(
+        MeshStatusCard(
             isConnected = isConnected,
             meshName = meshName,
             savedMeshName = savedMeshName,
             hasSavedMesh = hasSavedMesh,
-            connectionState = connectionState,
+            connectionState = crdtConnected,
             onReconnect = { viewModel.attemptReconnect() },
             onDisconnect = { viewModel.disconnectMesh(clearSaved = false) },
             onForget = { viewModel.forgetSavedMesh() }
         )
 
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        // 🔧 DAEMON STATUS CARD - atmosphere-core integration
+        DaemonStatusCard(viewModel)
+        
         Spacer(modifier = Modifier.height(16.dp))
         
         // 🎯 ROUTING DECISION CARD (THE CROWN JEWEL!)
@@ -244,24 +250,10 @@ fun HomeScreen(viewModel: AtmosphereViewModel) {
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            text = peer.name,
+                            text = peer.peerId.take(8) + "...",
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.Medium
                         )
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            text = peer.nodeId.take(8) + "...",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        if (peer.capabilities.isNotEmpty()) {
-                            Spacer(Modifier.weight(1f))
-                            Text(
-                                text = "${peer.capabilities.size} caps",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFF9C27B0)
-                            )
-                        }
                     }
                 }
             }
@@ -1006,12 +998,12 @@ private fun MetadataRow(key: String, value: String) {
  * 🔗 Mesh Connection Card - Shows mesh status with reconnect/forget options
  */
 @Composable
-private fun MeshConnectionCard(
+private fun MeshStatusCard(
     isConnected: Boolean,
     meshName: String?,
     savedMeshName: String?,
     hasSavedMesh: Boolean,
-    connectionState: ConnectionState,
+    connectionState: Boolean,
     onReconnect: () -> Unit,
     onDisconnect: () -> Unit,
     onForget: () -> Unit
@@ -1021,7 +1013,6 @@ private fun MeshConnectionCard(
         colors = CardDefaults.cardColors(
             containerColor = when {
                 isConnected -> Color(0xFF4CAF50).copy(alpha = 0.1f)
-                connectionState == ConnectionState.CONNECTING -> Color(0xFFFFA726).copy(alpha = 0.1f)
                 hasSavedMesh -> MaterialTheme.colorScheme.surfaceVariant
                 else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
             }
@@ -1033,26 +1024,16 @@ private fun MeshConnectionCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    when {
-                        isConnected -> Icons.Default.Cloud
-                        connectionState == ConnectionState.CONNECTING -> Icons.Default.CloudSync
-                        hasSavedMesh -> Icons.Default.CloudOff
-                        else -> Icons.Default.CloudOff
-                    },
+                    if (isConnected) Icons.Default.Cloud else Icons.Default.CloudOff,
                     contentDescription = null,
-                    tint = when {
-                        isConnected -> Color(0xFF4CAF50)
-                        connectionState == ConnectionState.CONNECTING -> Color(0xFFFFA726)
-                        else -> MaterialTheme.colorScheme.onSurfaceVariant
-                    },
+                    tint = if (isConnected) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(24.dp)
                 )
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = when {
-                            isConnected -> "Connected to Mesh"
-                            connectionState == ConnectionState.CONNECTING -> "Connecting..."
+                            isConnected -> "Connected via CRDT Mesh"
                             hasSavedMesh -> "Saved Mesh"
                             else -> "No Mesh Connection"
                         },
@@ -1073,16 +1054,12 @@ private fun MeshConnectionCard(
                     shape = MaterialTheme.shapes.small,
                     color = when {
                         isConnected -> Color(0xFF4CAF50)
-                        connectionState == ConnectionState.CONNECTING -> Color(0xFFFFA726)
-                        connectionState == ConnectionState.FAILED -> Color(0xFFEF5350)
                         else -> MaterialTheme.colorScheme.outline
                     }
                 ) {
                     Text(
                         text = when {
                             isConnected -> "ONLINE"
-                            connectionState == ConnectionState.CONNECTING -> "..."
-                            connectionState == ConnectionState.FAILED -> "FAILED"
                             hasSavedMesh -> "OFFLINE"
                             else -> "—"
                         },
@@ -1104,8 +1081,7 @@ private fun MeshConnectionCard(
                     if (!isConnected && hasSavedMesh) {
                         Button(
                             onClick = onReconnect,
-                            modifier = Modifier.weight(1f),
-                            enabled = connectionState != ConnectionState.CONNECTING
+                            modifier = Modifier.weight(1f)
                         ) {
                             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(4.dp))
@@ -1140,6 +1116,166 @@ private fun MeshConnectionCard(
                 Spacer(Modifier.height(8.dp))
                 Text(
                     text = "Scan a mesh QR code to connect",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Daemon Status Card - Shows atmosphere-core daemon connection and stats
+ */
+@Composable
+fun DaemonStatusCard(viewModel: AtmosphereViewModel) {
+    val daemonConnected by viewModel.daemonConnected.collectAsState()
+    val daemonPeers by viewModel.daemonPeers.collectAsState()
+    val daemonCapabilities by viewModel.daemonCapabilities.collectAsState()
+    val bigLlamaStatus by viewModel.bigLlamaStatus.collectAsState()
+    val daemonInfo by viewModel.daemonInfo.collectAsState()
+    
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = if (daemonConnected) {
+                Color(0xFF1E3A5F).copy(alpha = 0.3f)
+            } else {
+                Color(0xFF424242).copy(alpha = 0.3f)
+            }
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            // Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.Memory,
+                        contentDescription = null,
+                        tint = if (daemonConnected) StatusOnline else StatusOffline,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "Daemon",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                
+                // Connection status badge
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(
+                                color = if (daemonConnected) StatusOnline else StatusOffline,
+                                shape = androidx.compose.foundation.shape.CircleShape
+                            )
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = if (daemonConnected) "Connected" else "Offline",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (daemonConnected) StatusOnline else StatusOffline
+                    )
+                }
+            }
+            
+            if (daemonConnected && daemonInfo != null) {
+                Spacer(Modifier.height(12.dp))
+                
+                // Daemon info
+                Text(
+                    text = daemonInfo?.nodeName ?: "Unknown",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = "Node ID: ${daemonInfo?.nodeId?.take(16)}...",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                
+                Spacer(Modifier.height(12.dp))
+                
+                // Stats row
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // Peer count
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "${daemonPeers.size}",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "CRDT Peers",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    
+                    // Capability count
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "${daemonCapabilities.size}",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Capabilities",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    
+                    // BigLlama status
+                    Column(modifier = Modifier.weight(1f)) {
+                        val (icon, color) = when (bigLlamaStatus?.mode) {
+                            "cloud" -> "☁️" to Color(0xFF2196F3)
+                            "lan" -> "📡" to Color(0xFF4CAF50)
+                            else -> "⚫" to Color(0xFF9E9E9E)
+                        }
+                        Text(
+                            text = icon,
+                            style = MaterialTheme.typography.titleLarge
+                        )
+                        Text(
+                            text = "BigLlama",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = color
+                        )
+                    }
+                }
+                
+                // BigLlama details
+                bigLlamaStatus?.let { status ->
+                    if (status.isAvailable && status.modelName != null) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = "Model: ${status.modelName}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            } else if (!daemonConnected) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Daemon not reachable. Ensure adb reverse is configured:\nadb reverse tcp:11462 tcp:11462",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

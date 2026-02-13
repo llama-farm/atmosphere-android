@@ -248,4 +248,27 @@ interface IAtmosphereService {
      * @return JSON response from the tool
      */
     String callTool(String appName, String toolName, String paramsJson);
+
+    // ========================== CRDT Data Sync API ==========================
+
+    /** Insert a document into a CRDT collection. Returns doc ID. */
+    String crdtInsert(String collection, String docJson);
+
+    /** Query all documents in a CRDT collection. Returns JSON array. */
+    String crdtQuery(String collection);
+
+    /** Get a specific document by ID. Returns JSON or null. */
+    String crdtGet(String collection, String docId);
+
+    /** Subscribe to changes on a collection. Changes delivered via onCrdtChange callback. */
+    void crdtSubscribe(String collection);
+
+    /** Unsubscribe from collection changes. */
+    void crdtUnsubscribe(String collection);
+
+    /** Get connected CRDT mesh peers. Returns JSON array. */
+    String crdtPeers();
+
+    /** Get CRDT mesh info (peer_id, app_id, mesh_port, peer_count). Returns JSON. */
+    String crdtInfo();
 }

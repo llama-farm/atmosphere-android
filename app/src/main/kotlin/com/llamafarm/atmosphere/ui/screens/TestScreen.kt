@@ -27,7 +27,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.activity.compose.rememberLauncherForActivityResult
-import com.llamafarm.atmosphere.network.ConnectionState
+// ConnectionState removed — using Boolean for CRDT mesh
 import com.llamafarm.atmosphere.router.RoutingDecision
 import com.llamafarm.atmosphere.viewmodel.AtmosphereViewModel
 import kotlinx.coroutines.delay
@@ -39,7 +39,7 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TestScreen(viewModel: AtmosphereViewModel, onNavigateToPairing: () -> Unit) {
-    val connectionState by viewModel.meshConnectionState.collectAsState()
+    val isConnectedToCrdt by viewModel.meshConnectionState.collectAsState()
     val meshName by viewModel.meshName.collectAsState()
     val nodeState by viewModel.nodeState.collectAsState()
     val peers by viewModel.peers.collectAsState()
@@ -48,7 +48,7 @@ fun TestScreen(viewModel: AtmosphereViewModel, onNavigateToPairing: () -> Unit) 
     var selectedTab by remember { mutableStateOf(0) }
     val tabs = listOf("Inference", "Connectivity", "Nodes")
     
-    val isConnected = connectionState == ConnectionState.CONNECTED
+    val isConnected = isConnectedToCrdt
     
     Scaffold(
         topBar = {
@@ -66,7 +66,7 @@ fun TestScreen(viewModel: AtmosphereViewModel, onNavigateToPairing: () -> Unit) 
                     }
                 },
                 actions = {
-                    ConnectionBadge(connectionState)
+                    ConnectionBadge(isConnectedToCrdt)
                 }
             )
         }
@@ -105,14 +105,10 @@ fun TestScreen(viewModel: AtmosphereViewModel, onNavigateToPairing: () -> Unit) 
 }
 
 @Composable
-private fun ConnectionBadge(connectionState: ConnectionState) {
+private fun ConnectionBadge(connected: Boolean) {
     Surface(
         shape = RoundedCornerShape(16.dp),
-        color = when (connectionState) {
-            ConnectionState.CONNECTED -> Color(0xFF4CAF50)
-            ConnectionState.CONNECTING, ConnectionState.RECONNECTING -> Color(0xFFFFC107)
-            else -> Color(0xFFE57373)
-        }.copy(alpha = 0.2f),
+        color = (if (connected) Color(0xFF4CAF50) else Color(0xFFE57373)).copy(alpha = 0.2f),
         modifier = Modifier.padding(end = 8.dp)
     ) {
         Row(
@@ -123,23 +119,11 @@ private fun ConnectionBadge(connectionState: ConnectionState) {
                 modifier = Modifier
                     .size(8.dp)
                     .clip(CircleShape)
-                    .background(
-                        when (connectionState) {
-                            ConnectionState.CONNECTED -> Color(0xFF4CAF50)
-                            ConnectionState.CONNECTING, ConnectionState.RECONNECTING -> Color(0xFFFFC107)
-                            else -> Color(0xFFE57373)
-                        }
-                    )
+                    .background(if (connected) Color(0xFF4CAF50) else Color(0xFFE57373))
             )
             Spacer(Modifier.width(6.dp))
             Text(
-                text = when (connectionState) {
-                    ConnectionState.CONNECTED -> "Online"
-                    ConnectionState.CONNECTING -> "Connecting"
-                    ConnectionState.RECONNECTING -> "Reconnecting"
-                    ConnectionState.FAILED -> "Failed"
-                    ConnectionState.DISCONNECTED -> "Offline"
-                },
+                text = if (connected) "Online" else "Offline",
                 style = MaterialTheme.typography.labelSmall
             )
         }

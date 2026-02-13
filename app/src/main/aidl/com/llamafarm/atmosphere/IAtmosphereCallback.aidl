@@ -37,4 +37,7 @@ interface IAtmosphereCallback {
      * @param errorMessage Human-readable error message
      */
     void onError(String errorCode, String errorMessage);
+
+    /** Called when a CRDT document changes (insert/update/remove). */
+    void onCrdtChange(String collection, String docId, String kind, String docJson);
 }

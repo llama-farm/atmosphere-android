@@ -227,23 +227,21 @@ class AtmospherePreferences(private val context: Context) {
     
     /**
      * Check if we have a saved mesh connection.
+     * LEGACY - CRDT mesh doesn't need this, but kept for backwards compatibility
      */
     val hasSavedMeshConnection: Flow<Boolean> = dataStore.data.map { preferences ->
-        preferences[PreferenceKeys.LAST_MESH_TOKEN] != null
-    }
-    
-    suspend fun saveMeshConnection(endpoint: String, token: String, meshName: String?) {
-        dataStore.edit { preferences ->
-            preferences[PreferenceKeys.LAST_MESH_ENDPOINT] = endpoint
-            preferences[PreferenceKeys.LAST_MESH_TOKEN] = token
-            meshName?.let { preferences[PreferenceKeys.LAST_MESH_NAME] = it }
-            // Auto-enable reconnect when a connection is saved
-            preferences[PreferenceKeys.AUTO_RECONNECT_MESH] = true
-        }
+        false // Legacy relay removed - always false
     }
     
     /**
-     * Save full mesh connection with endpoints map for proper reconnection.
+     * LEGACY - Stub for backwards compatibility. CRDT mesh doesn't use relay connections.
+     */
+    suspend fun saveMeshConnection(endpoint: String, token: String, meshName: String?) {
+        // No-op: CRDT mesh doesn't use relay connections
+    }
+    
+    /**
+     * LEGACY - Stub for backwards compatibility. CRDT mesh doesn't use relay connections.
      */
     suspend fun saveMeshConnectionFull(
         endpoint: String, 
@@ -252,25 +250,14 @@ class AtmospherePreferences(private val context: Context) {
         endpointsJson: String?,
         inviteJson: String?
     ) {
-        dataStore.edit { preferences ->
-            preferences[PreferenceKeys.LAST_MESH_ENDPOINT] = endpoint
-            preferences[PreferenceKeys.LAST_MESH_TOKEN] = token
-            meshName?.let { preferences[PreferenceKeys.LAST_MESH_NAME] = it }
-            endpointsJson?.let { preferences[PreferenceKeys.LAST_MESH_ENDPOINTS_JSON] = it }
-            inviteJson?.let { preferences[PreferenceKeys.LAST_MESH_INVITE_JSON] = it }
-            // Auto-enable reconnect when a connection is saved
-            preferences[PreferenceKeys.AUTO_RECONNECT_MESH] = true
-        }
+        // No-op: CRDT mesh doesn't use relay connections
     }
     
+    /**
+     * LEGACY - Stub for backwards compatibility. CRDT mesh doesn't use relay connections.
+     */
     suspend fun clearMeshConnection() {
-        dataStore.edit { preferences ->
-            preferences.remove(PreferenceKeys.LAST_MESH_ENDPOINT)
-            preferences.remove(PreferenceKeys.LAST_MESH_TOKEN)
-            preferences.remove(PreferenceKeys.LAST_MESH_NAME)
-            preferences.remove(PreferenceKeys.LAST_MESH_ENDPOINTS_JSON)
-            preferences.remove(PreferenceKeys.LAST_MESH_INVITE_JSON)
-        }
+        // No-op: CRDT mesh doesn't use relay connections
     }
     
     suspend fun setAutoReconnectMesh(enabled: Boolean) {
@@ -485,47 +472,10 @@ class AtmospherePreferences(private val context: Context) {
      * Migrate legacy mesh connection to new SavedMesh format.
      * Call this on app start to preserve existing connections.
      */
+    /**
+     * LEGACY - Stub for backwards compatibility. CRDT mesh doesn't use relay connections.
+     */
     suspend fun migrateLegacyMeshConnection() {
-        val existingMeshes = getSavedMeshes()
-        if (existingMeshes.isNotEmpty()) {
-            // Already migrated
-            return
-        }
-        
-        val token = lastMeshToken.first() ?: return
-        val endpoint = lastMeshEndpoint.first() ?: return
-        val meshName = lastMeshName.first() ?: "My Mesh"
-        val endpointsJson = lastMeshEndpointsJson.first()
-        
-        Log.i(TAG, "Migrating legacy mesh connection: $meshName")
-        
-        // Parse endpoints map
-        val endpointsMap = try {
-            endpointsJson?.let { json ->
-                val obj = org.json.JSONObject(json)
-                mutableMapOf<String, String>().apply {
-                    obj.keys().forEach { key ->
-                        put(key, obj.getString(key))
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            null
-        }
-        
-        // If no endpoints map, create one from the single endpoint
-        val finalEndpoints = endpointsMap ?: mapOf("relay" to endpoint)
-        
-        val savedMesh = SavedMesh.fromJoin(
-            meshId = meshName.hashCode().toString(16),  // Generate ID from name
-            meshName = meshName,
-            founderId = "",
-            founderName = "Unknown",
-            token = token,
-            endpointsMap = finalEndpoints
-        )
-        
-        saveMesh(savedMesh)
-        Log.i(TAG, "Migration complete: created SavedMesh ${savedMesh.meshId}")
+        // No-op: No legacy relay connections to migrate
     }
 }

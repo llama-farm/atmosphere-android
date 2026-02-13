@@ -13,6 +13,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.llamafarm.atmosphere.inference.ModelManager
 import com.llamafarm.atmosphere.inference.UniversalRuntime
@@ -24,12 +25,18 @@ import kotlinx.coroutines.launch
 fun InferenceScreen(
     viewModel: InferenceViewModel = viewModel(),
     isMeshConnected: Boolean = false,
-    onMeshInference: ((String, (String?, String?) -> Unit) -> Unit)? = null
+    onMeshInference: ((String, (String?, String?) -> Unit) -> Unit)? = null,
+    atmosphereViewModel: com.llamafarm.atmosphere.viewmodel.AtmosphereViewModel? = null
 ) {
+    // Daemon state
+    val daemonConnected by atmosphereViewModel?.daemonConnected?.collectAsState() 
+        ?: remember { mutableStateOf(false) }
+    var useDaemon by remember { mutableStateOf(false) }
     val uiState by viewModel.uiState.collectAsState()
     val canChat = uiState.isModelLoaded || isMeshConnected
     var showModelPicker by remember { mutableStateOf(false) }
     var showPersonaPicker by remember { mutableStateOf(false) }
+    val context = androidx.compose.ui.platform.LocalContext.current
     var chatInput by remember { mutableStateOf("") }
     var chatMessages by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) } // role, content
     val scope = rememberCoroutineScope()
@@ -76,6 +83,54 @@ fun InferenceScreen(
                 onStartService = { viewModel.startService() },
                 onStopService = { viewModel.stopService() }
             )
+            
+            // Daemon toggle (if daemon connected)
+            if (daemonConnected) {
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (useDaemon) {
+                            MaterialTheme.colorScheme.tertiaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceVariant
+                        }
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Memory,
+                            contentDescription = null,
+                            tint = if (useDaemon) {
+                                MaterialTheme.colorScheme.onTertiaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            text = "Route via Daemon",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
+                            color = if (useDaemon) {
+                                MaterialTheme.colorScheme.onTertiaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                        Switch(
+                            checked = useDaemon,
+                            onCheckedChange = { useDaemon = it }
+                        )
+                    }
+                }
+            }
             
             // Error display
             uiState.error?.let { error ->
@@ -170,7 +225,68 @@ fun InferenceScreen(
                             chatInput = ""
                             chatMessages = chatMessages + ("user" to userMessage)
                             
-                            if (uiState.isModelLoaded) {
+                            if (useDaemon && daemonConnected && atmosphereViewModel != null) {
+                                // Route via CRDT mesh → Mac daemon → LlamaFarm
+                                chatMessages = chatMessages + ("assistant" to "🔧 Routing via CRDT mesh...")
+                                scope.launch {
+                                    try {
+                                        val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            val service = atmosphereViewModel?.serviceConnector?.getService()
+                                            val crdtCore = service?.getAtmosphereCore()
+                                            if (crdtCore != null) {
+                                                // Route via SemanticRouter to find best project
+                                                val router = com.llamafarm.atmosphere.router.SemanticRouter.getInstance(context)
+                                                val routeDecision = router.route(userMessage)
+                                                val projectPath = routeDecision?.capability?.projectPath ?: "discoverable/atmosphere-universal"
+                                                val routedLabel = routeDecision?.capability?.label ?: "atmosphere-universal"
+                                                android.util.Log.i("InferenceScreen", "🎯 Routed '$userMessage' → $routedLabel ($projectPath)")
+
+                                                val requestId = java.util.UUID.randomUUID().toString()
+                                                val messagesJson = org.json.JSONArray().apply {
+                                                    put(org.json.JSONObject().apply {
+                                                        put("role", "user")
+                                                        put("content", userMessage)
+                                                    })
+                                                }.toString()
+                                                crdtCore.insert("_requests", mapOf<String, Any>(
+                                                    "_id" to requestId,
+                                                    "request_id" to requestId,
+                                                    "prompt" to userMessage,
+                                                    "messages" to messagesJson,
+                                                    "model" to "auto",
+                                                    "project_path" to projectPath,
+                                                    "status" to "pending",
+                                                    "timestamp" to System.currentTimeMillis(),
+                                                    "source" to "android"
+                                                ))
+                                                android.util.Log.i("InferenceScreen", "📤 CRDT request inserted: $requestId")
+                                                // Poll _responses for up to 30s
+                                                var responseContent: String? = null
+                                                val deadline = System.currentTimeMillis() + 30_000
+                                                while (System.currentTimeMillis() < deadline && responseContent == null) {
+                                                    Thread.sleep(500)
+                                                    val responses = crdtCore.query("_responses")
+                                                    for (doc in responses) {
+                                                        if (doc["request_id"] == requestId) {
+                                                            responseContent = doc["content"]?.toString()
+                                                            android.util.Log.i("InferenceScreen", "📥 Got response for $requestId")
+                                                            break
+                                                        }
+                                                    }
+                                                }
+                                                responseContent ?: "❌ Timeout waiting for mesh response (30s)"
+                                            } else {
+                                                "❌ CRDT mesh not available"
+                                            }
+                                        }
+                                        chatMessages = chatMessages.dropLastWhile { it.first == "assistant" }
+                                        chatMessages = chatMessages + ("assistant" to result)
+                                    } catch (e: Exception) {
+                                        chatMessages = chatMessages.dropLastWhile { it.first == "assistant" }
+                                        chatMessages = chatMessages + ("assistant" to "❌ Mesh error: ${e.message}")
+                                    }
+                                }
+                            } else if (uiState.isModelLoaded) {
                                 // Local inference
                                 scope.launch {
                                     val response = StringBuilder()

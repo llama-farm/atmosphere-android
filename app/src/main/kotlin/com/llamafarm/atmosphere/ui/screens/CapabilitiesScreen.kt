@@ -36,10 +36,18 @@ data class Capability(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CapabilitiesScreen() {
+fun CapabilitiesScreen(
+    viewModel: com.llamafarm.atmosphere.viewmodel.AtmosphereViewModel? = null
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val preferences = remember { AtmospherePreferences(context) }
+    
+    // Daemon capabilities (if viewModel provided)
+    val daemonCapabilities by viewModel?.daemonCapabilities?.collectAsState() 
+        ?: remember { mutableStateOf(emptyList()) }
+    val daemonConnected by viewModel?.daemonConnected?.collectAsState() 
+        ?: remember { mutableStateOf(false) }
     
     // Collect persisted states
     val cameraEnabled by preferences.cameraEnabled.collectAsState(initial = false)
@@ -164,6 +172,84 @@ fun CapabilitiesScreen() {
         )
 
         Spacer(modifier = Modifier.height(8.dp))
+        
+        // Daemon CRDT Capabilities (if connected)
+        if (daemonConnected && daemonCapabilities.isNotEmpty()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                )
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Cloud,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = "CRDT Capabilities (${daemonCapabilities.size})",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "Capabilities discovered via daemon CRDT mesh",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    
+                    // Show first 5 capabilities
+                    daemonCapabilities.take(5).forEach { cap ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    text = cap.label,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                                )
+                                Text(
+                                    text = "${cap.nodeName} (${cap.nodeId.take(8)}...)",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f)
+                                )
+                            }
+                        }
+                    }
+                    
+                    if (daemonCapabilities.size > 5) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "+ ${daemonCapabilities.size - 5} more",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                    }
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(16.dp))
+        }
 
         // Summary card
         val enabledCount = capabilities.count { it.isEnabled }

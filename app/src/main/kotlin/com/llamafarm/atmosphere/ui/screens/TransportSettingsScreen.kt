@@ -25,7 +25,7 @@ import android.content.pm.PackageManager
 import android.net.wifi.p2p.WifiP2pManager
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.llamafarm.atmosphere.data.AtmospherePreferences
-import com.llamafarm.atmosphere.network.ConnectionState
+// ConnectionState removed — CRDT mesh
 import com.llamafarm.atmosphere.network.TransportType
 import com.llamafarm.atmosphere.viewmodel.AtmosphereViewModel
 import kotlinx.coroutines.launch
@@ -63,8 +63,8 @@ fun TransportSettingsScreen(
     val scope = rememberCoroutineScope()
     val preferences = remember { AtmospherePreferences(context) }
     
-    // Get relay connection state from ViewModel
-    val relayConnectionState by viewModel.relayConnectionState.collectAsState()
+    // Get CRDT connection state from ViewModel
+    val crdtConnected by viewModel.crdtConnected.collectAsState()
     val isConnectedToMesh by viewModel.isConnectedToMesh.collectAsState()
     
     // Collect transport states
@@ -91,12 +91,11 @@ fun TransportSettingsScreen(
         }
     }
     
-    // Map relay connection state to transport status
+    // Map CRDT connection state to transport status
     val relayStatus = when {
         preferLocalOnly -> TransportStatus.UNAVAILABLE
         !relayEnabled -> TransportStatus.UNAVAILABLE
-        relayConnectionState == ConnectionState.CONNECTED -> TransportStatus.CONNECTED
-        relayConnectionState == ConnectionState.CONNECTING || relayConnectionState == ConnectionState.RECONNECTING -> TransportStatus.CONNECTING
+        crdtConnected -> TransportStatus.CONNECTED
         else -> TransportStatus.DISCONNECTED
     }
     
@@ -317,6 +316,7 @@ fun TransportSettingsScreen(
                                 when (transport.type) {
                                     TransportType.LAN -> preferences.setTransportLanEnabled(enabled)
                                     TransportType.WIFI_DIRECT -> preferences.setTransportWifiDirectEnabled(enabled)
+                                    TransportType.BLE -> preferences.setTransportBleMeshEnabled(enabled)
                                     TransportType.BLE_MESH -> preferences.setTransportBleMeshEnabled(enabled)
                                     TransportType.MATTER -> preferences.setTransportMatterEnabled(enabled)
                                     TransportType.RELAY -> preferences.setTransportRelayEnabled(enabled)

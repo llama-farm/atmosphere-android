@@ -2,7 +2,6 @@ package com.llamafarm.atmosphere.cost
 
 import android.content.Context
 import android.util.Log
-import com.llamafarm.atmosphere.network.MeshConnection
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -55,7 +54,6 @@ class CostBroadcaster(
     private val collector = CostCollector(context)
     
     private var broadcastJob: Job? = null
-    private var meshConnection: MeshConnection? = null
     
     private val _state = MutableStateFlow(BroadcastState())
     val state: StateFlow<BroadcastState> = _state.asStateFlow()
@@ -65,94 +63,37 @@ class CostBroadcaster(
     var collectIntervalMs: Long = 10_000L    // Collect more frequently than broadcast
     
     /**
-     * Start broadcasting cost factors.
+     * Start collecting cost factors.
+     * LEGACY - Broadcasting removed. Cost info now read from CRDT gradient table.
      * 
-     * @param connection The mesh connection to broadcast over
-     * @param intervalMs Broadcast interval in milliseconds (default 30s)
+     * @param intervalMs Collection interval in milliseconds (default 30s)
      */
-    fun start(connection: MeshConnection, intervalMs: Long = 30_000L) {
+    fun start(intervalMs: Long = 30_000L) {
         if (_state.value.isRunning) {
-            Log.w(TAG, "Already broadcasting")
+            Log.w(TAG, "Already collecting")
             return
         }
         
-        meshConnection = connection
         broadcastIntervalMs = intervalMs
         
-        // Start the cost collector
+        // Start the cost collector (still useful for local metrics)
         collector.startCollecting(collectIntervalMs)
         
-        // Start broadcasting
-        broadcastJob = scope.launch {
-            Log.i(TAG, "Starting cost broadcasts (interval: ${intervalMs}ms)")
-            _state.value = _state.value.copy(isRunning = true)
-            
-            while (isActive) {
-                try {
-                    broadcast()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Broadcast error", e)
-                    _state.value = _state.value.copy(
-                        errors = _state.value.errors + 1
-                    )
-                }
-                delay(broadcastIntervalMs)
-            }
-        }
+        _state.value = _state.value.copy(isRunning = true)
+        Log.i(TAG, "Started cost collection (relay broadcasting removed - use CRDT gradient table)")
     }
     
     /**
-     * Stop broadcasting.
+     * Stop collecting costs.
      */
     fun stop() {
-        Log.i(TAG, "Stopping cost broadcasts")
+        Log.i(TAG, "Stopping cost collection")
         
         broadcastJob?.cancel()
         broadcastJob = null
         collector.stopCollecting()
-        meshConnection = null
         
         _state.value = _state.value.copy(isRunning = false)
-    }
-    
-    /**
-     * Perform a single broadcast of current cost factors.
-     */
-    private fun broadcast() {
-        val connection = meshConnection
-        if (connection == null) {
-            Log.w(TAG, "Not connected to mesh, skipping broadcast")
-            return
-        }
-        
-        val factors = collector.collectFactors()
-        val cost = factors.calculateCost()
-        
-        val message = JSONObject().apply {
-            put("type", "cost_update")
-            put("node_id", nodeId)
-            put("cost", cost)
-            put("factors", factors.toJson())
-        }
-        
-        // TODO: Update to use new gossip API
-        // Send cost update via mesh connection
-        try {
-            connection.sendMessage(message)
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to broadcast cost update: ${e.message}")
-        }
-        
-        val now = System.currentTimeMillis()
-        _state.value = _state.value.copy(
-            lastBroadcast = now,
-            broadcastCount = _state.value.broadcastCount + 1,
-            lastCost = cost
-        )
-        
-        Log.d(TAG, "Broadcast cost: $cost (battery=${factors.batteryLevel}%, " +
-                   "cpu=${String.format("%.1f", factors.cpuUsage * 100)}%, " +
-                   "network=${factors.networkType})")
     }
     
     /**
@@ -166,30 +107,22 @@ class CostBroadcaster(
     fun getCurrentCost(): Float? = collector.costFactors.value?.calculateCost()
     
     /**
-     * Force an immediate broadcast.
+     * LEGACY - No-op. Relay broadcasting removed.
      */
     fun broadcastNow() {
-        scope.launch {
-            try {
-                broadcast()
-            } catch (e: Exception) {
-                Log.e(TAG, "Immediate broadcast failed", e)
-            }
-        }
+        // No-op: Relay broadcasting removed
     }
     
     /**
-     * Update the broadcast interval.
+     * Update the collection interval.
      */
     fun setInterval(intervalMs: Long) {
         broadcastIntervalMs = intervalMs
         
         // Restart if running
         if (_state.value.isRunning) {
-            meshConnection?.let { connection ->
-                stop()
-                start(connection, intervalMs)
-            }
+            stop()
+            start(intervalMs)
         }
     }
     

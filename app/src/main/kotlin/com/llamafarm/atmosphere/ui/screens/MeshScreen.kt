@@ -17,8 +17,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.llamafarm.atmosphere.bindings.MeshPeer
 import com.llamafarm.atmosphere.data.SavedMesh
-import com.llamafarm.atmosphere.network.ConnectionState
-import com.llamafarm.atmosphere.network.RelayPeer
+// Relay imports removed — CRDT mesh replaces relay
 import com.llamafarm.atmosphere.network.TransportStatus
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.delay
@@ -45,23 +44,27 @@ fun MeshScreen(
     var isScanning by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     
+    // Daemon peers
+    val daemonPeers by viewModel.daemonPeers.collectAsState()
+    val daemonConnected by viewModel.daemonConnected.collectAsState()
+    
     // NEW: Saved meshes
     val savedMeshes by viewModel.savedMeshes.collectAsState()
     val currentMeshId by viewModel.currentMeshId.collectAsState()
-    val connectionState by viewModel.relayConnectionState.collectAsState()
+    val crdtConnected by viewModel.crdtConnected.collectAsState()
     val transportStatuses by viewModel.transportStatuses.collectAsState()
     val activeTransportType by viewModel.activeTransportType.collectAsState()
     
-    // Combine native and relay peers for display
+    // Combine native and CRDT peers for display
     val allPeers = remember(nativePeers, relayPeers) {
-        nativePeers + relayPeers.map { relayPeer ->
+        nativePeers + relayPeers.map { crdtPeer ->
             MeshPeer(
-                nodeId = relayPeer.nodeId,
-                name = relayPeer.name,
-                address = "relay",
-                connected = relayPeer.connected,
+                nodeId = crdtPeer.peerId,
+                name = crdtPeer.peerId.take(8),
+                address = "crdt",
+                connected = true,
                 latencyMs = null,
-                capabilities = relayPeer.capabilities
+                capabilities = emptyList()
             )
         }
     }
@@ -223,7 +226,7 @@ fun MeshScreen(
                 SavedMeshCard(
                     mesh = mesh,
                     isConnected = currentMeshId == mesh.meshId && isConnectedToMesh,
-                    isConnecting = currentMeshId == mesh.meshId && connectionState == ConnectionState.CONNECTING,
+                    isConnecting = false, // CRDT mesh connects automatically
                     onReconnect = { viewModel.reconnectToMesh(mesh.meshId) },
                     onForget = { viewModel.removeSavedMesh(mesh.meshId) },
                     onToggleAutoReconnect = { enabled ->
@@ -233,6 +236,73 @@ fun MeshScreen(
             }
         }
 
+        // Daemon CRDT Peers (if connected)
+        if (daemonConnected && daemonPeers.isNotEmpty()) {
+            item {
+                Text(
+                    text = "CRDT Peers (${daemonPeers.size})",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.tertiary
+                )
+            }
+            
+            items(daemonPeers, key = { it.nodeId }) { peer ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Status indicator
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = StatusOnline,
+                            modifier = Modifier.size(10.dp)
+                        ) {}
+                        
+                        Spacer(Modifier.width(12.dp))
+                        
+                        // Peer info
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = peer.nodeName,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
+                            Text(
+                                text = peer.nodeId.take(16) + "...",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.7f)
+                            )
+                            if (peer.capabilities.isNotEmpty()) {
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    text = "${peer.capabilities.size} capabilities",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.6f)
+                                )
+                            }
+                        }
+                        
+                        // Icon
+                        Icon(
+                            Icons.Default.Cloud,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.5f),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
+        }
+        
         // Peer section
         if (allPeers.isEmpty() && savedMeshes.isEmpty()) {
             // Empty state

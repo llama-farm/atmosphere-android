@@ -473,7 +473,7 @@ private fun QRScannerView(
 data class ComprehensiveInvite(
     val version: Int,
     val token: String,
-    val mesh: MeshInfo,
+    val mesh: JoinMeshInfo,
     val endpoints: Map<String, String>,
     val capabilities: List<String>,
     val network: NetworkInfo,
@@ -481,7 +481,7 @@ data class ComprehensiveInvite(
     val created: Long
 )
 
-data class MeshInfo(
+data class JoinMeshInfo(
     val id: String,
     val name: String,
     val founder: String,

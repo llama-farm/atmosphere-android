@@ -211,16 +211,10 @@ class SavedMeshRepository(private val preferences: AtmospherePreferences) {
     }
     
     /**
-     * Update mesh connection stats.
+     * LEGACY - Stub for backwards compatibility. CRDT mesh handles connections differently.
      */
     suspend fun updateMeshConnection(meshId: String, endpointType: String, successful: Boolean, latencyMs: Long? = null) {
-        val meshes = getAllMeshes().toMutableList()
-        val index = meshes.indexOfFirst { it.meshId == meshId }
-        
-        if (index >= 0) {
-            meshes[index] = meshes[index].withUpdatedEndpoint(endpointType, successful, latencyMs)
-            saveMeshes(meshes)
-        }
+        // No-op: CRDT mesh doesn't track relay connection stats
     }
     
     /**

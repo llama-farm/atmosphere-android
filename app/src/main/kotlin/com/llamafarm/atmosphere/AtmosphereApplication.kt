@@ -8,7 +8,6 @@ import android.util.Log
 import com.llamafarm.atmosphere.router.SemanticRouter
 import com.llamafarm.atmosphere.router.DefaultCapabilities
 import com.llamafarm.atmosphere.cost.CostCollector
-import com.llamafarm.atmosphere.network.MeshConnection
 import com.llamafarm.atmosphere.inference.LocalInferenceEngine
 import com.llamafarm.atmosphere.inference.ModelManager
 import com.llamafarm.atmosphere.auth.IdentityManager
@@ -79,8 +78,7 @@ class AtmosphereApplication : Application() {
     lateinit var identityManager: IdentityManager
         private set
     
-    var meshConnection: MeshConnection? = null
-        private set
+    // meshConnection removed - CRDT mesh is sole transport
     
     var costCollector: CostCollector? = null
         private set
@@ -134,9 +132,7 @@ class AtmosphereApplication : Application() {
             Log.w(TAG, "Failed to initialize cost collector: ${e.message}")
         }
         
-        // Mesh connection - initialized lazily when user joins mesh
-        // meshConnection will be set when connectToMesh() is called
-        meshConnection = null
+        // Mesh connection removed - CRDT mesh handles all connectivity
         
         // Local inference engine - initialized lazily
         try {
@@ -182,15 +178,11 @@ class AtmosphereApplication : Application() {
     }
     
     /**
-     * Connect to a mesh network.
+     * LEGACY - Stub for backwards compatibility. CRDT mesh handles all connectivity.
      */
-    fun connectToMesh(endpoint: String, token: String): MeshConnection {
-        // Disconnect existing connection if any
-        meshConnection?.disconnect()
-        
-        val connection = MeshConnection(this, endpoint)
-        meshConnection = connection
-        return connection
+    fun connectToMesh(endpoint: String, token: String): Any? {
+        Log.d(TAG, "connectToMesh called but ignored (CRDT mesh handles connectivity)")
+        return null
     }
 
     private fun createNotificationChannels() {

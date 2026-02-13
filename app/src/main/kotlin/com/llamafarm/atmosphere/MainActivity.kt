@@ -596,7 +596,6 @@ fun AtmosphereApp(screens: List<Screen>, initialDeepLink: DeepLinkData? = null) 
                 )
             }
             composable(Screen.JoinMesh.route) {
-                val connectionState by viewModel.meshConnectionState.collectAsState()
                 val meshConnected by viewModel.isConnectedToMesh.collectAsState()
 
                 // Navigate back when successfully connected

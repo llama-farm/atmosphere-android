@@ -12,15 +12,19 @@ import com.llamafarm.atmosphere.service.ServiceStatus
 import com.llamafarm.atmosphere.data.AtmospherePreferences
 import com.llamafarm.atmosphere.data.SavedMesh
 import com.llamafarm.atmosphere.data.SavedMeshRepository
-import com.llamafarm.atmosphere.network.RelayPeer
+import com.llamafarm.atmosphere.data.DaemonRepository
+import com.llamafarm.atmosphere.data.DaemonPeer
+import com.llamafarm.atmosphere.data.DaemonCapability
+import com.llamafarm.atmosphere.data.BigLlamaStatus
+import com.llamafarm.atmosphere.data.DaemonInfo
+// RelayPeer import removed — CRDT mesh replaces relay
 import com.llamafarm.atmosphere.network.TransportStatus
 import com.llamafarm.atmosphere.router.SemanticRouter
 import com.llamafarm.atmosphere.router.RoutingDecision
 import com.llamafarm.atmosphere.core.GossipManager
 import com.llamafarm.atmosphere.service.AtmosphereService
-import com.llamafarm.atmosphere.transport.BleTransport
-import com.llamafarm.atmosphere.network.MeshConnection
-import com.llamafarm.atmosphere.network.ConnectionState
+// MeshConnection import removed — CRDT mesh replaces relay
+// ConnectionState import removed — CRDT mesh replaces relay
 import com.llamafarm.atmosphere.network.MeshMessage
 import com.llamafarm.atmosphere.transport.NodeInfo
 import kotlinx.coroutines.Dispatchers
@@ -68,17 +72,17 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
     private val _peers = MutableStateFlow<List<MeshPeer>>(emptyList())
     val peers: StateFlow<List<MeshPeer>> = _peers.asStateFlow()
     
-    // Relay peer list (from WebSocket)
-    private val _relayPeers = MutableStateFlow<List<RelayPeer>>(emptyList())
-    val relayPeers: StateFlow<List<RelayPeer>> = _relayPeers.asStateFlow()
+    // CRDT peer list (from CRDT mesh)
+    private val _relayPeers = MutableStateFlow<List<com.llamafarm.atmosphere.core.PeerInfo>>(emptyList())
+    val relayPeers: StateFlow<List<com.llamafarm.atmosphere.core.PeerInfo>> = _relayPeers.asStateFlow()
     
     // Combined peer count
     val peerCount: Int
         get() = _peers.value.size + _relayPeers.value.size
     
-    // Relay connection state (for UI)
-    private val _relayConnectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
-    val relayConnectionState: StateFlow<ConnectionState> = _relayConnectionState.asStateFlow()
+    // CRDT connection state (for UI)
+    private val _crdtConnected = MutableStateFlow(false)
+    val crdtConnected: StateFlow<Boolean> = _crdtConnected.asStateFlow()
     
     // Cost tracking - THE CROWN JEWEL
     private val _localCost = MutableStateFlow(1.0f)
@@ -113,7 +117,7 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
     val activeTransportType: StateFlow<String?> = _activeTransportType.asStateFlow()
     
     // Service connector for real-time state
-    private val serviceConnector = try {
+    val serviceConnector = try {
         ServiceManager.getConnector()
     } catch (e: Exception) {
         Log.w(TAG, "ServiceManager not initialized, creating new connector")
@@ -126,13 +130,39 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
     // Native node reference (for direct calls when service isn't available)
     private var nativeNode: AtmosphereNode? = null
     
-    // BLE Transport for local mesh (no internet required!)
-    private var bleTransport: BleTransport? = null
+    // BLE Transport removed - will be added back as Rust transport in atmosphere-core
     private val _blePeers = MutableStateFlow<List<NodeInfo>>(emptyList())
     val blePeers: StateFlow<List<NodeInfo>> = _blePeers.asStateFlow()
     
     private val _bleEnabled = MutableStateFlow(false)
     val bleEnabled: StateFlow<Boolean> = _bleEnabled.asStateFlow()
+    
+    // ============================================================================
+    // Daemon Integration - atmosphere-core daemon (localhost:11462)
+    // ============================================================================
+    
+    // Daemon repository for HTTP communication
+    private val daemonRepository = DaemonRepository()
+    
+    // Daemon connection state
+    private val _daemonConnected = MutableStateFlow(false)
+    val daemonConnected: StateFlow<Boolean> = _daemonConnected.asStateFlow()
+    
+    // Daemon peers (from CRDT)
+    private val _daemonPeers = MutableStateFlow<List<DaemonPeer>>(emptyList())
+    val daemonPeers: StateFlow<List<DaemonPeer>> = _daemonPeers.asStateFlow()
+    
+    // Daemon capabilities (from CRDT)
+    private val _daemonCapabilities = MutableStateFlow<List<DaemonCapability>>(emptyList())
+    val daemonCapabilities: StateFlow<List<DaemonCapability>> = _daemonCapabilities.asStateFlow()
+    
+    // BigLlama status from daemon
+    private val _bigLlamaStatus = MutableStateFlow<BigLlamaStatus?>(null)
+    val bigLlamaStatus: StateFlow<BigLlamaStatus?> = _bigLlamaStatus.asStateFlow()
+    
+    // Daemon info
+    private val _daemonInfo = MutableStateFlow<DaemonInfo?>(null)
+    val daemonInfo: StateFlow<DaemonInfo?> = _daemonInfo.asStateFlow()
     
     // Semantic router for intent-based routing
     val semanticRouter = SemanticRouter.getInstance(application)
@@ -182,9 +212,9 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
         Log.d(TAG, "📡 MESH EVENT: [${event.type}] ${event.title} - ${event.detail ?: ""}")
     }
     
-    // Mesh WebSocket connection state - proxied from service via relayConnectionState
-    val meshConnectionState: StateFlow<ConnectionState>
-        get() = relayConnectionState
+    // CRDT mesh connection state
+    val meshConnectionState: StateFlow<Boolean>
+        get() = crdtConnected
     
     // WebSocket mesh name (separate from native mesh)
     val webSocketMeshName: StateFlow<String?>
@@ -209,6 +239,9 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
         // Observe mesh events from service
         observeServiceMeshEvents()
         
+        // Start daemon polling
+        startDaemonPolling()
+        
         // Poll gossip stats periodically (get initial stats immediately!)
         viewModelScope.launch {
             _gossipStats.value = gossipManager.getStats()  // Initial stats
@@ -220,11 +253,11 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
             }
         }
         
-        // Observe relay peers from service
+        // Observe CRDT peers from service
         viewModelScope.launch {
             var attempts = 0
             while (attempts < 30) {
-                val peers = serviceConnector?.getServiceRelayPeers()
+                val peers = serviceConnector?.getServiceCrdtPeers()
                 if (peers != null) {
                     peers.collect { peerList ->
                         _relayPeers.value = peerList
@@ -254,8 +287,8 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
                 )
                 
                 // Update mesh connection state
-                _isConnectedToMesh.value = status.meshConnectionState == ConnectionState.CONNECTED
-                _relayConnectionState.value = status.meshConnectionState
+                _isConnectedToMesh.value = status.crdtConnected
+                _crdtConnected.value = status.crdtConnected
                 _activeTransportType.value = status.activeTransport
                 
                 // Update local cost
@@ -264,7 +297,7 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
                 }
                 
                 // Add mesh event for status changes
-                if (status.meshConnectionState == ConnectionState.CONNECTED && !_isConnectedToMesh.value) {
+                if (status.crdtConnected && !_isConnectedToMesh.value) {
                     addMeshEvent(MeshEvent(
                         type = "connected",
                         title = "Connected to Mesh",
@@ -324,103 +357,115 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
     }
     
     /**
-     * Observe mesh messages from the current connection.
-     * Converts mesh messages to UI events for the event log.
+     * Start polling the atmosphere-core daemon for state updates.
+     * Collects daemon state flows and updates ViewModel state.
      */
-    fun observeMeshMessages(connection: MeshConnection) {
+    /**
+     * Observe CRDT mesh state directly from AtmosphereService's in-process core.
+     * This supplements the HTTP-based daemon polling with real-time local state.
+     */
+    private fun observeCrdtMeshState() {
         viewModelScope.launch {
-            connection.messages.collect { message ->
-                when (message) {
-                    is com.llamafarm.atmosphere.network.MeshMessage.CapabilityAnnounce -> {
-                        val capList = message.capabilities ?: emptyList()
-                        Log.i(TAG, "📡 Capability announcement from ${message.sourceNodeId}: ${capList.size} caps")
-                        addMeshEvent(MeshEvent(
-                            type = "gossip",
-                            title = "Capabilities Received",
-                            detail = "${capList.size} capabilities from ${message.nodeId.take(8)}",
-                            nodeId = message.sourceNodeId,
-                            metadata = buildMap {
-                                put("count", capList.size.toString())
-                                put("node", message.nodeId)
-                                capList.forEachIndexed { i, label ->
-                                    if (i < 20) put("cap_$i", label)
-                                }
-                            }
-                        ))
+            // Wait for service to bind
+            serviceConnector?.bound?.first { it } ?: return@launch
+            Log.i(TAG, "🔮 Starting CRDT mesh state observation")
+            
+            while (true) {
+                delay(3000)
+                try {
+                    val service = serviceConnector?.getService() ?: continue
+                    val core = service.getAtmosphereCore() ?: continue
+                    
+                    // Update daemon connected (local core is always "connected")
+                    _daemonConnected.value = true
+                    
+                    // Update peers from CRDT mesh
+                    val crdtPeers = core.connectedPeers()
+                    _daemonPeers.value = crdtPeers.map { p ->
+                        DaemonPeer(
+                            nodeId = p.peerId,
+                            nodeName = p.peerId.take(8),
+                            capabilities = emptyList(),
+                            lastSeen = p.lastSeen,
+                            metadata = mapOf("transport" to p.transport)
+                        )
                     }
-                    is com.llamafarm.atmosphere.network.MeshMessage.InferenceRequest -> {
-                        addMeshEvent(MeshEvent(
-                            type = "inference",
-                            title = "Inference Request",
-                            detail = "Request ID: ${message.requestId}",
-                            nodeId = message.sourceNodeId
-                        ))
-                    }
-                    is com.llamafarm.atmosphere.network.MeshMessage.InferenceResponse -> {
-                        addMeshEvent(MeshEvent(
-                            type = "inference",
-                            title = "Inference Response",
-                            detail = "Request ID: ${message.requestId}"
-                        ))
-                    }
-                    is com.llamafarm.atmosphere.network.MeshMessage.LlmResponse -> {
-                        addMeshEvent(MeshEvent(
-                            type = "llm",
-                            title = "LLM Response",
-                            detail = message.response.take(50)
-                        ))
-                    }
-                    is com.llamafarm.atmosphere.network.MeshMessage.ChatResponse -> {
-                        addMeshEvent(MeshEvent(
-                            type = "chat",
-                            title = "Chat Response",
-                            detail = message.response.take(50)
-                        ))
-                    }
-                    is com.llamafarm.atmosphere.network.MeshMessage.Joined -> {
-                        addMeshEvent(MeshEvent(
-                            type = "joined",
-                            title = "Joined Mesh",
-                            detail = message.meshName ?: "unknown"
-                        ))
-                    }
-                    is com.llamafarm.atmosphere.network.MeshMessage.Left -> {
-                        addMeshEvent(MeshEvent(
-                            type = "left",
-                            title = "Node Left",
-                            nodeId = message.nodeId
-                        ))
-                    }
-                    is com.llamafarm.atmosphere.network.MeshMessage.PeerList -> {
-                        _relayPeers.value = message.peers
-                    }
-                    is com.llamafarm.atmosphere.network.MeshMessage.Error -> {
-                        addMeshEvent(MeshEvent(
-                            type = "error",
-                            title = "Error",
-                            detail = message.message
-                        ))
-                    }
-                    is com.llamafarm.atmosphere.network.MeshMessage.AppResponse -> {
-                        addMeshEvent(MeshEvent(
-                            type = "app_response",
-                            title = "App Response (${message.status})",
-                            detail = "Request: ${message.requestId.take(8)}..."
-                        ))
-                    }
-                    is com.llamafarm.atmosphere.network.MeshMessage.PushDelivery -> {
-                        addMeshEvent(MeshEvent(
-                            type = "push",
-                            title = "Push: ${message.eventType}",
-                            detail = "From ${message.capabilityId}"
-                        ))
-                    }
-                    is com.llamafarm.atmosphere.network.MeshMessage.Unknown -> {
-                        Log.d(TAG, "Unknown message type: ${message.type}")
-                    }
+                    
+                    // Update daemon info from local core
+                    _daemonInfo.value = DaemonInfo(
+                        nodeId = core.peerId,
+                        nodeName = "BigLlama-Android",
+                        version = "1.0",
+                        uptime = 0,
+                        peerCount = crdtPeers.size,
+                        capabilityCount = _daemonCapabilities.value.size
+                    )
+                } catch (e: Exception) {
+                    Log.d(TAG, "CRDT state poll error: ${e.message}")
                 }
             }
         }
+    }
+    
+    private fun startDaemonPolling() {
+        Log.i(TAG, "🔧 Starting daemon polling")
+        daemonRepository.startPolling(intervalMs = 5000)
+        
+        // Also observe CRDT mesh directly from service
+        observeCrdtMeshState()
+        
+        // Observe daemon state flows (HTTP-based, kept as fallback)
+        viewModelScope.launch {
+            daemonRepository.isConnected.collect { connected ->
+                // Only update if CRDT core isn't providing state
+                if (serviceConnector?.getService()?.getAtmosphereCore() == null) {
+                    _daemonConnected.value = connected
+                }
+                if (connected) {
+                    Log.d(TAG, "✅ Daemon connected")
+                } else {
+                    Log.d(TAG, "❌ Daemon disconnected")
+                }
+            }
+        }
+        
+        viewModelScope.launch {
+            daemonRepository.peers.collect { peers ->
+                _daemonPeers.value = peers
+                Log.d(TAG, "Daemon peers updated: ${peers.size}")
+            }
+        }
+        
+        viewModelScope.launch {
+            daemonRepository.capabilities.collect { caps ->
+                _daemonCapabilities.value = caps
+                Log.d(TAG, "Daemon capabilities updated: ${caps.size}")
+            }
+        }
+        
+        viewModelScope.launch {
+            daemonRepository.bigLlamaStatus.collect { status ->
+                _bigLlamaStatus.value = status
+                status?.let {
+                    Log.d(TAG, "BigLlama status: ${it.mode}")
+                }
+            }
+        }
+        
+        viewModelScope.launch {
+            daemonRepository.daemonInfo.collect { info ->
+                _daemonInfo.value = info
+            }
+        }
+    }
+    
+    /**
+     * Observe mesh messages — relay removed, CRDT mesh handles all messaging.
+     * Kept as stub for callers that haven't been updated yet.
+     */
+    @Deprecated("Relay removed — CRDT mesh handles messaging")
+    fun observeMeshMessages(connection: Any) {
+        Log.w(TAG, "observeMeshMessages called but relay is removed — CRDT mesh handles all messaging")
     }
     
     /**
@@ -930,7 +975,7 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
                 _peers.value = emptyList()
                 _relayPeers.value = emptyList()
                 _blePeers.value = emptyList()
-                _relayConnectionState.value = ConnectionState.DISCONNECTED
+                _crdtConnected.value = false
                 _transportStatuses.value = emptyMap()
                 _activeTransportType.value = null
                 
@@ -961,95 +1006,28 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
      * Start BLE transport for local mesh discovery.
      * Works even without internet - devices discover each other via Bluetooth.
      */
+    /**
+     * LEGACY - BLE transport removed. Will be re-added as Rust transport in atmosphere-core.
+     */
     fun startBle(meshId: String? = null) {
-        Log.i(TAG, "🔵 startBle() called, meshId=$meshId")
-        
-        if (bleTransport != null) {
-            Log.d(TAG, "BLE already running")
-            return
-        }
-        
-        try {
-            Log.i(TAG, "🔵 Creating BleTransport...")
-            val app = getApplication<Application>()
-            // nodeId should already be set by initializeRouter(), fall back to UUID if not
-            val nodeId = _nodeState.value.nodeId ?: java.util.UUID.randomUUID().toString().replace("-", "").take(16)
-            
-            bleTransport = BleTransport(
-                context = app,
-                nodeName = "Atmosphere-Android",
-                capabilities = listOf("relay", "llm", "embeddings"),
-                meshId = meshId ?: _meshName.value
-            ).apply {
-                onPeerDiscovered = { info ->
-                    Log.i(TAG, "🔵 BLE peer discovered: ${info.name} (${info.nodeId})")
-                    addMeshEvent(MeshEvent(type = "ble_peer", title = "BLE Peer Discovered", detail = "${info.name} via Bluetooth"))
-                    viewModelScope.launch {
-                        _blePeers.value = _blePeers.value + info
-                    }
-                }
-                onPeerLost = { peerId ->
-                    Log.i(TAG, "🔴 BLE peer lost: $peerId")
-                    addMeshEvent(MeshEvent(type = "ble_peer", title = "BLE Peer Lost", detail = peerId))
-                    viewModelScope.launch {
-                        _blePeers.value = _blePeers.value.filter { it.nodeId != peerId }
-                    }
-                }
-                onMessage = { msg ->
-                    Log.d(TAG, "📨 BLE message from ${msg.sourceId}: ${msg.payload.size} bytes")
-                    // Handle BLE mesh messages (gossip, chat requests, etc.)
-                    handleBleMessage(msg)
-                }
-            }
-            
-            Log.i(TAG, "🔵 Calling bleTransport.start()...")
-            bleTransport?.start()
-            Log.i(TAG, "🔵 bleTransport.start() returned, setting _bleEnabled=true")
-            _bleEnabled.value = true
-            addMeshEvent(MeshEvent(type = "ble", title = "BLE Started", detail = "Scanning for local Atmosphere nodes"))
-            Log.i(TAG, "✅ BLE transport started successfully")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Failed to start BLE transport: ${e.message}", e)
-            addMeshEvent(MeshEvent(type = "error", title = "BLE Failed", detail = e.message ?: "Unknown error"))
-            _bleEnabled.value = false
-        }
+        Log.i(TAG, "startBle() called but BLE transport is disabled (will be added back as Rust transport)")
+        _bleEnabled.value = false
     }
     
     /**
-     * Stop BLE transport.
+     * LEGACY - BLE transport removed.
      */
     fun stopBle() {
-        bleTransport?.stop()
-        bleTransport = null
         _bleEnabled.value = false
         _blePeers.value = emptyList()
-        Log.i(TAG, "BLE transport stopped")
+        Log.i(TAG, "stopBle() called (BLE transport removed)")
     }
     
     /**
-     * Handle incoming BLE mesh message.
+     * LEGACY - BLE message handling removed.
      */
-    private fun handleBleMessage(msg: com.llamafarm.atmosphere.transport.BleMessage) {
-        try {
-            when (msg.header.msgType) {
-                com.llamafarm.atmosphere.transport.MessageType.HELLO -> {
-                    // Peer announcing itself
-                    val payload = String(msg.payload, Charsets.UTF_8)
-                    Log.d(TAG, "BLE HELLO from ${msg.sourceId}: $payload")
-                }
-                com.llamafarm.atmosphere.transport.MessageType.DATA -> {
-                    // Generic data message - could be chat, gossip, etc.
-                    val payload = String(msg.payload, Charsets.UTF_8)
-                    Log.d(TAG, "BLE DATA from ${msg.sourceId}: $payload")
-                }
-                else -> {
-                    Log.d(TAG, "BLE message type: ${msg.header.msgType}")
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error handling BLE message", e)
-        }
+    private fun handleBleMessage(msg: Any) {
+        // No-op: BLE transport removed
     }
     
     /**
@@ -1202,5 +1180,15 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
             detail = "$appName/$toolName",
             metadata = mapOf("app" to appName, "tool" to toolName)
         ))
+    }
+    
+    /**
+     * Clean up resources when ViewModel is destroyed.
+     */
+    override fun onCleared() {
+        super.onCleared()
+        Log.i(TAG, "ViewModel clearing - stopping daemon polling")
+        daemonRepository.close()
+        stopBle()
     }
 }

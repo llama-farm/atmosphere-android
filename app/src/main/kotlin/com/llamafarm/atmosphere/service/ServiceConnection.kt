@@ -12,7 +12,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import com.llamafarm.atmosphere.cost.CostFactors
-import com.llamafarm.atmosphere.network.ConnectionState
+// ConnectionState import removed — CRDT mesh replaces relay
 
 private const val TAG = "ServiceConnector"
 
@@ -23,7 +23,7 @@ data class ServiceStatus(
     val state: AtmosphereService.ServiceState = AtmosphereService.ServiceState.STOPPED,
     val nodeId: String? = null,
     val connectedPeers: Int = 0,
-    val meshConnectionState: ConnectionState = ConnectionState.DISCONNECTED,
+    val crdtConnected: Boolean = false,
     val activeTransport: String? = null,
     val currentCost: Float? = null,
     val costFactors: CostFactors? = null,
@@ -35,10 +35,8 @@ data class ServiceStatus(
         state == AtmosphereService.ServiceState.STOPPED -> "Offline"
         state == AtmosphereService.ServiceState.STARTING -> "Starting..."
         state == AtmosphereService.ServiceState.STOPPING -> "Stopping..."
-        meshConnectionState == ConnectionState.CONNECTED -> "Connected to Mesh"
-        meshConnectionState == ConnectionState.CONNECTING -> "Connecting..."
-        meshConnectionState == ConnectionState.FAILED -> "Connection Failed"
-        state == AtmosphereService.ServiceState.RUNNING -> "Online (No Mesh)"
+        crdtConnected -> "Connected via CRDT Mesh"
+        state == AtmosphereService.ServiceState.RUNNING -> "Online (No Peers)"
         else -> "Unknown"
     }
 }
@@ -151,7 +149,6 @@ class ServiceConnector(private val context: Context) {
                 svc.state,
                 svc.nodeId,
                 svc.connectedPeers,
-                svc.meshConnectionState,
                 svc.activeTransport,
                 svc.currentCost,
                 svc.costFactors
@@ -159,16 +156,15 @@ class ServiceConnector(private val context: Context) {
                 val state = values[0] as AtmosphereService.ServiceState
                 val nodeId = values[1] as? String
                 val connectedPeers = values[2] as Int
-                val meshState = values[3] as ConnectionState
-                val transport = values[4] as? String
-                val cost = values[5] as? Float
-                val factors = values[6] as? CostFactors
+                val transport = values[3] as? String
+                val cost = values[4] as? Float
+                val factors = values[5] as? CostFactors
                 
                 ServiceStatus(
                     state = state,
                     nodeId = nodeId,
                     connectedPeers = connectedPeers,
-                    meshConnectionState = meshState,
+                    crdtConnected = svc.getCrdtPeerCount() > 0,
                     activeTransport = transport,
                     currentCost = cost,
                     costFactors = factors,
@@ -176,7 +172,7 @@ class ServiceConnector(private val context: Context) {
                 )
             }.collect { status ->
                 _status.value = status
-                Log.d(TAG, "Status update: ${status.statusText}, mesh=${status.meshConnectionState}")
+                Log.d(TAG, "Status update: ${status.statusText}, crdt=${status.crdtConnected}")
             }
         }
     }
@@ -313,10 +309,10 @@ class ServiceConnector(private val context: Context) {
     }
     
     /**
-     * Get relay peers from service.
+     * Get CRDT peers from service.
      */
-    fun getServiceRelayPeers(): StateFlow<List<com.llamafarm.atmosphere.network.RelayPeer>>? {
-        return service?.relayPeers
+    fun getServiceCrdtPeers(): StateFlow<List<com.llamafarm.atmosphere.core.PeerInfo>>? {
+        return service?.crdtPeers
     }
 }
 

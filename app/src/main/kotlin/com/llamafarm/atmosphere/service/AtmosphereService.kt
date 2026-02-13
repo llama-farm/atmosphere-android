@@ -25,12 +25,16 @@ import com.llamafarm.atmosphere.data.AtmospherePreferences
 import com.llamafarm.atmosphere.data.SavedMesh
 import com.llamafarm.atmosphere.data.SavedMeshRepository
 import com.llamafarm.atmosphere.discovery.LanDiscovery
-import com.llamafarm.atmosphere.network.MeshConnection
-import com.llamafarm.atmosphere.network.ConnectionState
-import com.llamafarm.atmosphere.network.MeshMessage
+// MeshConnection/relay imports removed — CRDT mesh is sole transport
+// import com.llamafarm.atmosphere.network.MeshConnection
+// import com.llamafarm.atmosphere.network.ConnectionState
+// import com.llamafarm.atmosphere.network.MeshMessage
 import com.llamafarm.atmosphere.router.SemanticRouter
 import com.llamafarm.atmosphere.router.RouteConstraints
 import com.llamafarm.atmosphere.inference.LocalInferenceEngine
+import com.llamafarm.atmosphere.core.AtmosphereCore
+// ClientServer removed — AIDL binder replaces TCP for Android IPC
+import com.llamafarm.atmosphere.core.PeerInfo as CrdtPeerInfo
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -90,10 +94,11 @@ class AtmosphereService : Service() {
     }
     
     // Public accessors for BinderService / SDK
-    fun isConnected(): Boolean = meshConnection?.connectionState?.value == com.llamafarm.atmosphere.network.ConnectionState.CONNECTED
+    fun isConnected(): Boolean = atmosphereCore != null && atmosphereCore!!.connectedPeers().isNotEmpty()
     fun getNodeId(): String? = _nodeId.value
     fun getMeshId(): String? = currentMeshId
-    fun getRelayPeerCount(): Int = _relayPeers.value.size
+    fun getAtmosphereCore(): AtmosphereCore? = atmosphereCore
+    fun getCrdtPeerCount(): Int = atmosphereCore?.connectedPeers()?.size ?: 0
 
     private val binder = LocalBinder()
     private var wakeLock: PowerManager.WakeLock? = null
@@ -111,22 +116,26 @@ class AtmosphereService : Service() {
     private var voiceCapability: VoiceCapability? = null
     private var meshCapabilityHandler: MeshCapabilityHandler? = null
     
-    // Mesh connection (for cost broadcasting)
-    private var meshConnection: MeshConnection? = null
+    // Relay mesh connection removed — CRDT mesh is sole transport
     
     // LAN discovery (mDNS/NSD)
     private var lanDiscovery: LanDiscovery? = null
     private var currentMeshId: String? = null
     
-    // BLE mesh transport
-    private var bleMeshManager: com.llamafarm.atmosphere.transport.BleMeshManager? = null
+    // BLE mesh transport removed - will be added back as Rust transport in atmosphere-core
     
     // Transport bridge: dedup cache for cross-transport forwarding
     private val seenNonces = java.util.LinkedHashMap<String, Long>(100, 0.75f, true)
     private val SEEN_NONCES_MAX = 500
     
-    // Current relay URL for mesh
-    private var currentRelayUrl: String? = null
+    // Relay URL removed — CRDT mesh handles connectivity
+    
+    // CRDT mesh engine (atmosphere-core daemon)
+    private var atmosphereCore: AtmosphereCore? = null
+    
+    // CRDT state exposed to UI
+    private val _crdtPeers = MutableStateFlow<List<CrdtPeerInfo>>(emptyList())
+    val crdtPeers: StateFlow<List<CrdtPeerInfo>> = _crdtPeers.asStateFlow()
     
     // Semantic router for capability matching
     private var semanticRouter: SemanticRouter? = null
@@ -148,11 +157,8 @@ class AtmosphereService : Service() {
     private val _connectedPeers = MutableStateFlow(0)
     val connectedPeers: StateFlow<Int> = _connectedPeers.asStateFlow()
     
-    // Mesh connection state exposed to clients
-    private val _meshConnectionState = MutableStateFlow(com.llamafarm.atmosphere.network.ConnectionState.DISCONNECTED)
-    val meshConnectionState: StateFlow<com.llamafarm.atmosphere.network.ConnectionState> = _meshConnectionState.asStateFlow()
-    
-    private val _activeTransport = MutableStateFlow<String?>(null)
+    // Connection state derived from CRDT mesh
+    private val _activeTransport = MutableStateFlow<String?>("crdt")
     val activeTransport: StateFlow<String?> = _activeTransport.asStateFlow()
 
     private val _nodeId = MutableStateFlow<String?>(null)
@@ -160,10 +166,6 @@ class AtmosphereService : Service() {
     
     private val _currentCost = MutableStateFlow<Float?>(null)
     val currentCost: StateFlow<Float?> = _currentCost.asStateFlow()
-
-    // Relay peers visible in the mesh
-    private val _relayPeers = MutableStateFlow<List<com.llamafarm.atmosphere.network.RelayPeer>>(emptyList())
-    val relayPeers: StateFlow<List<com.llamafarm.atmosphere.network.RelayPeer>> = _relayPeers.asStateFlow()
 
     // Mesh events for UI display (gossip, routing, peer events)
     data class MeshEvent(
@@ -205,10 +207,8 @@ class AtmosphereService : Service() {
             ACTION_START -> startNode()
             ACTION_STOP -> stopNode()
             "ACTION_RETRY_BLE" -> {
-                if (bleMeshManager == null || bleMeshManager?.isRunning() != true) {
-                    Log.i(TAG, "🔵 Retrying BLE transport after permission grant")
-                    startBleTransport()
-                }
+                // BLE transport removed - will be added back as Rust transport
+                Log.d(TAG, "ACTION_RETRY_BLE ignored (BLE transport removed)")
             }
             else -> Log.w(TAG, "Unknown action: ${intent?.action}")
         }
@@ -294,126 +294,20 @@ class AtmosphereService : Service() {
     
     private fun connectToMesh(mesh: com.llamafarm.atmosphere.data.SavedMesh) {
         currentMeshId = mesh.meshId
-        Log.i(TAG, "Connecting to mesh: ${mesh.meshName}")
+        Log.i(TAG, "🔮 Connecting to mesh via CRDT: ${mesh.meshName}")
         
-        // Restart BLE with correct mesh ID if it changed
-        if (bleMeshManager != null && bleMeshManager?.isRunning() == true) {
-            bleMeshManager?.stop()
-            bleMeshManager = null
-            startBleTransport()
-        }
-        Log.i(TAG, "📡 Available endpoints: ${mesh.endpoints.map { "${it.type}=${it.address}" }}")
+        // BLE transport removed - will be added back as Rust transport
+        // (no action needed here)
         
-        // Clean up existing connection
-        meshConnection?.disconnect()
-        
-        // Check if LAN discovery has found a peer for this mesh (even if not saved yet)
-        val discoveredLanPeer = lanDiscovery?.getPeerForMesh(mesh.meshId)
-        if (discoveredLanPeer != null) {
-            Log.i(TAG, "🏠 LAN peer already discovered: ${discoveredLanPeer.name} at ${discoveredLanPeer.host}:${discoveredLanPeer.port}")
-        }
-        
-        // Try LAN first, then relay
-        // LAN endpoints are "local" or "lan" type with ws:// URLs
-        val lanEndpoint = mesh.endpoints
-            .filter { it.type == "local" || it.type == "lan" }
-            .maxByOrNull { it.priority }
-        
-        val relayEndpoint = mesh.endpoints
-            .firstOrNull { it.type == "relay" }
-        
-        // Build connection URL - prefer LAN when available
-        val connectionUrl: String
-        val transportType: String
-        
-        if (lanEndpoint != null) {
-            // Convert HTTP URL to WebSocket mesh endpoint
-            val lanAddr = lanEndpoint.address
-                .replace("http://", "ws://")
-                .replace("https://", "wss://")
-                .trimEnd('/')
-            connectionUrl = "$lanAddr/api/mesh/ws"
-            transportType = "lan"
-            Log.i(TAG, "🏠 Using LAN connection: $connectionUrl")
-        } else if (discoveredLanPeer != null) {
-            // Use dynamically discovered LAN peer (mDNS)
-            connectionUrl = discoveredLanPeer.wsUrl
-            transportType = "lan"
-            Log.i(TAG, "🏠 Using discovered LAN peer: $connectionUrl")
-        } else if (relayEndpoint != null) {
-            connectionUrl = relayEndpoint.address
-            transportType = "relay"
-            Log.i(TAG, "☁️ Using relay connection: $connectionUrl")
-        } else {
-            connectionUrl = "wss://atmosphere-relay-production.up.railway.app/relay/${mesh.meshId}"
-            transportType = "relay"
-            Log.i(TAG, "☁️ Using default relay: $connectionUrl")
-        }
-        
-        currentRelayUrl = connectionUrl
-        
-        // Create new connection with token for authentication
-        meshConnection = MeshConnection(applicationContext, connectionUrl, mesh.relayToken).apply {
-            // Monitor connection state
-            serviceScope.launch {
-                connectionState.collect { state ->
-                    when (state) {
-                        ConnectionState.CONNECTED -> {
-                            Log.i(TAG, "✅ Connected to ${mesh.meshName} via $transportType")
-                            _meshConnectionState.value = ConnectionState.CONNECTED
-                            _activeTransport.value = transportType
-                            updateNotification("Connected to ${mesh.meshName} via $transportType")
-                            meshRepository.updateMeshConnection(mesh.meshId, transportType, true)
-                            
-                            // AUTO-TEST
-                            serviceScope.launch {
-                                delay(3000)
-                                Log.i(TAG, "🚀 TRIGGERING AUTO-TEST REQUEST")
-                                val reqId = sendLlmRequest("Describe the atmosphere of Mars", "auto") { resp, err ->
-                                    if (err != null) {
-                                        Log.e(TAG, "❌ TEST FAILED: $err")
-                                    } else {
-                                        Log.i(TAG, "✅ TEST SUCCESS: Received response: ${resp?.take(50)}...")
-                                    }
-                                }
-                                Log.i(TAG, "Test request sent with ID: $reqId")
-                            }
-                        }
-                        ConnectionState.DISCONNECTED -> {
-                            Log.w(TAG, "Disconnected from ${mesh.meshName}")
-                            _meshConnectionState.value = ConnectionState.DISCONNECTED
-                            _activeTransport.value = null
-                            updateNotification("Disconnected")
-                        }
-                        ConnectionState.FAILED -> {
-                            Log.e(TAG, "Connection failed for ${mesh.meshName}")
-                            _meshConnectionState.value = ConnectionState.FAILED
-                        }
-                        else -> { /* ignore intermediate states */ }
-                    }
-                }
-            }
-            
-            // Listen for incoming messages
-            serviceScope.launch {
-                messages.collect { message ->
-                    this@AtmosphereService.handleMeshMessage(message)
-                }
-            }
-            
-            connect()
-        }
+        // CRDT mesh handles connectivity — no relay WebSocket needed
+        updateNotification("Connected to ${mesh.meshName} via CRDT mesh")
     }
     
     /**
      * Disconnect from current mesh.
      */
     fun disconnectMesh() {
-        meshConnection?.disconnect()
-        meshConnection = null
-        currentRelayUrl = null
         currentMeshId = null
-        _meshConnectionState.value = ConnectionState.DISCONNECTED
         _activeTransport.value = null
         updateNotification("Online (Disconnected)")
     }
@@ -434,11 +328,10 @@ class AtmosphereService : Service() {
                 detail = "${peer.name} at ${peer.host}:${peer.port}"
             ))
             
-            // If we're connected to a mesh via relay and this peer is on the same mesh,
-            // reconnect via LAN for lower latency
+            // If LAN peer found for current mesh, save the endpoint
             val meshId = currentMeshId
-            if (meshId != null && peer.meshId == meshId && _activeTransport.value == "relay") {
-                Log.i(TAG, "🚀 LAN peer matches current mesh! Switching from relay to LAN...")
+            if (meshId != null && peer.meshId == meshId && _activeTransport.value != "lan") {
+                Log.i(TAG, "🏠 LAN peer matches current mesh — saving endpoint")
                 
                 serviceScope.launch {
                     // Update saved mesh with LAN endpoint
@@ -455,9 +348,6 @@ class AtmosphereService : Service() {
                     
                     val updatedMesh = mesh.copy(endpoints = existingEndpoints)
                     meshRepository.saveMesh(updatedMesh)
-                    
-                    // Reconnect (will prefer LAN now)
-                    connectToMesh(updatedMesh)
                 }
             } else if (meshId != null && peer.meshId == meshId && _activeTransport.value != "lan") {
                 // Not connected yet or connected via something else — add LAN endpoint
@@ -508,22 +398,10 @@ class AtmosphereService : Service() {
         
         val targets = mutableListOf<String>()
         
-        // Forward to WebSocket (if not from WebSocket)
-        if (sourceTransport != "websocket") {
-            meshConnection?.sendBroadcast(msg)?.also { targets.add("ws") }
-        }
+        // WebSocket relay removed — CRDT mesh handles cross-transport sync
         
-        // Forward to BLE (if not from BLE)
-        if (sourceTransport != "ble") {
-            val ble = bleMeshManager
-            if (ble != null && ble.isRunning()) {
-                serviceScope.launch {
-                    val bytes = msg.toString().toByteArray(Charsets.UTF_8)
-                    ble.broadcast(bytes)
-                    targets.add("ble")
-                }
-            }
-        }
+        // BLE transport removed - will be added back as Rust transport
+        // (no bridging needed here)
         
         if (targets.isNotEmpty()) {
             Log.i(TAG, "🌉 Bridged ${msg.optString("type", "?")} from $sourceTransport → ${targets.joinToString()}")
@@ -533,86 +411,12 @@ class AtmosphereService : Service() {
     /**
      * Start BLE mesh transport for offline mesh communication.
      */
+    /**
+     * LEGACY - BLE transport removed. Will be added back as Rust transport in atmosphere-core.
+     */
     private fun startBleTransport() {
-        val nodeId = _nodeId.value ?: return
-        
-        if (!com.llamafarm.atmosphere.transport.BleMeshManager.isBleSupported(applicationContext)) {
-            Log.w(TAG, "BLE not supported on this device")
-            return
-        }
-        
-        // Use current mesh ID or a default for discovery
-        val meshId = currentMeshId ?: "default"
-        
-        val manager = com.llamafarm.atmosphere.transport.BleMeshManager(
-            context = applicationContext,
-            nodeId = nodeId,
-            meshId = meshId
-        )
-        
-        // Bridge BLE messages to gossip
-        serviceScope.launch {
-            manager.incomingMessages.collect { msg ->
-                Log.i(TAG, "📡 BLE message from ${msg.fromNodeId} (${msg.payload.size} bytes, ${msg.hopCount} hops)")
-                
-                addMeshEvent(MeshEvent(
-                    type = "peer",
-                    title = "BLE Message",
-                    detail = "From ${msg.fromNodeId.take(8)} (${msg.hopCount} hops)",
-                    metadata = mapOf("transport" to "ble", "hops" to msg.hopCount.toString())
-                ))
-                
-                try {
-                    val text = String(msg.payload, Charsets.UTF_8)
-                    val json = org.json.JSONObject(text)
-                    val type = json.optString("type", "")
-                    
-                    when (type) {
-                        "capability_announce", "gossip.announce", "capability.announce" -> {
-                            // Process gossip via BLE + bridge to WebSocket
-                            val gossipManager = com.llamafarm.atmosphere.core.GossipManager.getInstance(applicationContext)
-                            gossipManager.handleAnnouncement(msg.fromNodeId, json)
-                            bridgeMessage(json, "ble")
-                            Log.i(TAG, "🔵 BLE gossip processed from ${msg.fromNodeId}")
-                            
-                            addMeshEvent(MeshEvent(
-                                type = "gossip",
-                                title = "BLE Capabilities",
-                                detail = "Via BLE from ${msg.fromNodeId.take(8)}",
-                                metadata = mapOf("transport" to "ble")
-                            ))
-                        }
-                        "llm_response", "chat_response" -> {
-                            // LLM response via BLE
-                            val requestId = json.optString("request_id", "")
-                            val response = json.optString("response", "")
-                            Log.i(TAG, "📥 BLE LLM response for $requestId")
-                            
-                            pendingRequests.remove(requestId)?.invoke(response, null)
-                        }
-                        else -> {
-                            Log.d(TAG, "Unhandled BLE message type: $type")
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to parse BLE message: ${e.message}")
-                }
-            }
-        }
-        
-        // Start without encryption for now (mesh token would be needed for encrypted mode)
-        val started = manager.start(meshToken = null)
-        if (started) {
-            bleMeshManager = manager
-            Log.i(TAG, "🔵 BLE mesh transport started for mesh $meshId")
-            addMeshEvent(MeshEvent(
-                type = "peer",
-                title = "BLE Started",
-                detail = "Scanning & advertising on mesh $meshId"
-            ))
-        } else {
-            Log.w(TAG, "Failed to start BLE mesh transport")
-        }
+        Log.d(TAG, "startBleTransport called but BLE transport removed (will be Rust transport)")
+        // No-op: BLE will be added back as proper Rust transport
     }
     
     /**
@@ -624,7 +428,7 @@ class AtmosphereService : Service() {
      * @return Request ID or null if not connected
      */
     /**
-     * Send an app request to a mesh app capability endpoint.
+     * Send an app request — routed through CRDT mesh.
      */
     fun sendAppRequest(
         capabilityId: String,
@@ -632,15 +436,12 @@ class AtmosphereService : Service() {
         params: JSONObject = JSONObject(),
         onResponse: (JSONObject) -> Unit
     ) {
-        val connection = meshConnection
-        if (connection == null) {
-            onResponse(JSONObject().apply {
-                put("status", 503)
-                put("error", "No mesh connection")
-            })
-            return
-        }
-        connection.sendAppRequest(capabilityId, endpoint, params, onResponse)
+        // TODO: Implement via CRDT mesh doc insertion (_app_requests collection)
+        Log.w(TAG, "sendAppRequest not yet implemented over CRDT mesh")
+        onResponse(JSONObject().apply {
+            put("status", 501)
+            put("error", "App requests not yet implemented over CRDT mesh")
+        })
     }
 
     fun callTool(
@@ -649,15 +450,12 @@ class AtmosphereService : Service() {
         params: JSONObject = JSONObject(),
         onResponse: (JSONObject) -> Unit
     ) {
-        val connection = meshConnection
-        if (connection == null) {
-            onResponse(JSONObject().apply {
-                put("status", 503)
-                put("error", "No mesh connection")
-            })
-            return
-        }
-        connection.callTool(appName, toolName, params, onResponse)
+        // TODO: Implement via CRDT mesh doc insertion (_tool_calls collection)
+        Log.w(TAG, "callTool not yet implemented over CRDT mesh")
+        onResponse(JSONObject().apply {
+            put("status", 501)
+            put("error", "Tool calls not yet implemented over CRDT mesh")
+        })
     }
     
     fun sendLlmRequest(
@@ -894,56 +692,41 @@ class AtmosphereService : Service() {
         model: String?,
         onResponse: (String?, String?) -> Unit
     ) {
-        val connection = meshConnection
-        if (connection == null) {
-            // Try BLE fallback
-            val ble = bleMeshManager
-            if (ble != null && ble.isRunning()) {
-                Log.i(TAG, "🔵 No WebSocket, trying BLE for inference request")
-                serviceScope.launch {
-                    val blePayload = JSONObject().apply {
-                        put("type", "inference_request")
-                        put("prompt", prompt)
-                        put("request_id", requestId)
-                        if (model != null) put("model", model)
-                    }.toString().toByteArray(Charsets.UTF_8)
+        // Insert request into CRDT mesh — daemon will pick it up
+        val core = atmosphereCore
+        if (core != null) {
+            Log.i(TAG, "🔮 Inserting inference request into CRDT mesh for $targetNodeId (requestId=$requestId)")
+            serviceScope.launch {
+                try {
+                    // Route to find project_path
+                    val router = semanticRouter ?: SemanticRouter.getInstance(applicationContext).also { semanticRouter = it }
+                    val routeResult = router.route(prompt)
+                    val projectPath = routeResult?.capability?.projectPath ?: "discoverable/atmosphere-universal"
                     
-                    val sent = ble.broadcast(blePayload)
-                    if (!sent) {
-                        pendingRequests.remove(requestId)
-                        onResponse(null, "BLE broadcast failed")
-                    } else {
-                        Log.i(TAG, "🔵 Sent inference request via BLE")
-                    }
+                    val requestDoc = mapOf(
+                        "request_id" to requestId,
+                        "target_node_id" to targetNodeId,
+                        "prompt" to prompt,
+                        "model" to (model ?: "auto"),
+                        "project_path" to projectPath,
+                        "status" to "pending",
+                        "timestamp" to (System.currentTimeMillis() / 1000.0)
+                    )
+                    core.insert("_requests", requestDoc)
+                    Log.i(TAG, "🔮 CRDT request inserted: $requestId")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to insert CRDT request", e)
+                    pendingRequests.remove(requestId)
+                    onResponse(null, "CRDT insert failed: ${e.message}")
                 }
-                return
             }
-            
-            Log.w(TAG, "Cannot send remote request: not connected to mesh")
-            pendingRequests.remove(requestId)
-            onResponse(null, "Not connected to mesh")
             return
         }
         
-        Log.i(TAG, "Sending inference request to $targetNodeId (requestId=$requestId)")
-        
-        // Build payload
-        val payload = JSONObject().apply {
-            put("prompt", prompt)
-            if (model != null) put("model", model)
-        }
-        
-        // Send inference request via mesh connection (properly wrapped for relay)
-        connection.sendInferenceRequest(
-            targetNodeId = targetNodeId,
-            capabilityId = model ?: "default",  // Use model as capability hint
-            requestId = requestId,
-            payload = payload
-        )
-        
-        Log.d(TAG, "Sent inference_request to $targetNodeId")
-        
-        // Callback will be invoked when response arrives (handled in message listener)
+        // BLE fallback removed - BLE transport will be added back as Rust transport
+        Log.w(TAG, "Cannot send remote request: no CRDT mesh")
+        pendingRequests.remove(requestId)
+        onResponse(null, "Not connected to mesh")
     }
     
     /**
@@ -956,178 +739,70 @@ class AtmosphereService : Service() {
         model: String,
         onResponse: (String?, String?) -> Unit
     ) {
-        val connection = meshConnection
-        if (connection == null) {
-            Log.w(TAG, "Cannot send remote chat request: not connected to mesh")
+        val core = atmosphereCore
+        if (core == null) {
+            Log.w(TAG, "Cannot send remote chat request: CRDT mesh not running")
             pendingRequests.remove(requestId)
-            onResponse(null, "Not connected to mesh")
+            onResponse(null, "CRDT mesh not running")
             return
         }
         
-        Log.i(TAG, "Sending chat request to $targetNodeId (requestId=$requestId)")
-        
-        // Build messages array
-        val messagesArray = JSONArray()
-        messages.forEach { msg ->
-            messagesArray.put(JSONObject().apply {
-                put("role", msg["role"])
-                put("content", msg["content"])
-            })
-        }
-        
-        // Build payload
-        val payload = JSONObject().apply {
-            put("messages", messagesArray)
-            put("model", model)
-        }
-        
-        // Send message via mesh connection
-        val message = JSONObject().apply {
-            put("type", "inference_request")
-            put("target_node_id", targetNodeId)
-            put("request_id", requestId)
-            put("payload", payload)
-        }
-        
-        connection.sendMessage(message)
-        
-        Log.d(TAG, "Sent chat request to $targetNodeId")
-        
-        // Callback will be invoked when response arrives (handled in message listener)
-    }
-    
-    /**
-     * Handle incoming mesh messages, particularly inference_response.
-     */
-    private fun handleMeshMessage(message: MeshMessage) {
-        when (message) {
-            is MeshMessage.CapabilityAnnounce -> {
-                val capCount = message.announcement?.optJSONArray("capabilities")?.length() ?: message.capabilities?.size ?: 0
-                Log.i(TAG, "📡 Capability announcement from ${message.sourceNodeId}: $capCount capabilities")
-                addMeshEvent(MeshEvent(
-                    type = "gossip",
-                    title = "Capabilities Received",
-                    detail = "$capCount capabilities from mesh",
-                    nodeId = message.sourceNodeId
-                ))
-                
-                // Bridge gossip to BLE (came from WebSocket/LAN)
-                message.announcement?.let { bridgeMessage(it, "websocket") }
-                
-                // Log gradient table state after announcement
-                val gossipManager = com.llamafarm.atmosphere.core.GossipManager.getInstance(applicationContext)
-                val stats = gossipManager.getStats()
-                Log.i(TAG, "📊 Gradient table: ${stats["total_capabilities"]} total (${stats["local_capabilities"]} local, ${stats["remote_capabilities"]} remote)")
-            }
-            
-            is MeshMessage.InferenceResponse -> {
-                val requestId = message.requestId
-                val callback = pendingRequests.remove(requestId)
-                
-                if (callback != null) {
-                    // Extract response from payload
-                    val response = message.response ?: message.payload?.optString("response")?.takeIf { it.isNotEmpty() }
-                    val error = message.error ?: message.payload?.optString("error")?.takeIf { it.isNotEmpty() }
-                    
-                    // Check for response FIRST (successful case), then error
-                    if (!response.isNullOrEmpty()) {
-                        Log.i(TAG, "✅ Received inference response for $requestId: ${response.length} chars")
-                        addMeshEvent(MeshEvent(
-                            type = "inference",
-                            title = "LLM Response",
-                            detail = "${response.length} chars"
-                        ))
-                        callback(response, null)
-                    } else if (!error.isNullOrEmpty()) {
-                        Log.w(TAG, "Inference error for $requestId: $error")
-                        callback(null, error)
-                    } else {
-                        Log.w(TAG, "Empty inference response for $requestId")
-                        callback(null, "Empty response")
-                    }
-                } else {
-                    Log.w(TAG, "Received inference_response for unknown requestId: $requestId")
-                }
-            }
-            
-            is MeshMessage.InferenceRequest -> {
-                // Handle incoming inference requests (when other nodes request us)
-                handleIncomingInferenceRequest(message)
-            }
-            
-            is MeshMessage.Joined -> {
-                addMeshEvent(MeshEvent(
-                    type = "connected",
-                    title = "Joined Mesh",
-                    detail = message.meshName ?: "unknown"
-                ))
-            }
-            
-            is MeshMessage.PeerList -> {
-                _relayPeers.value = message.peers
-                val peerNames = message.peers.map { it.name }
-                Log.i(TAG, "📋 Updated peers: $peerNames")
-                addMeshEvent(MeshEvent(
-                    type = "peer",
-                    title = "Peers Updated",
-                    detail = "${message.peers.size} peers: ${peerNames.joinToString(", ")}"
-                ))
-            }
-            
-            else -> {
-                Log.d(TAG, "Received mesh message: ${message::class.simpleName}")
-            }
-        }
-    }
-    
-    /**
-     * Handle incoming inference requests from other nodes.
-     */
-    private fun handleIncomingInferenceRequest(request: MeshMessage.InferenceRequest) {
-        val requestId = request.requestId
-        val payload = request.payload ?: return
-        
-        Log.i(TAG, "Received inference request $requestId from ${request.sourceNodeId}")
+        Log.i(TAG, "🔮 Inserting chat request into CRDT mesh for $targetNodeId (requestId=$requestId)")
         
         serviceScope.launch {
             try {
-                val prompt = payload.optString("prompt")
-                if (prompt.isEmpty()) {
-                    sendInferenceResponse(requestId, null, "No prompt provided")
-                    return@launch
+                val messagesJson = messages.map { msg ->
+                    mapOf("role" to (msg["role"] ?: "user"), "content" to (msg["content"] ?: ""))
                 }
+                // Route to find project_path
+                val lastUserMsg = messages.lastOrNull { it["role"] == "user" }?.get("content") ?: ""
+                val router = semanticRouter ?: SemanticRouter.getInstance(applicationContext).also { semanticRouter = it }
+                val routeResult = router.route(lastUserMsg)
+                val projectPath = routeResult?.capability?.projectPath ?: "discoverable/atmosphere-universal"
                 
-                // Execute locally
-                executeLocalInference(requestId, prompt) { response, error ->
-                    sendInferenceResponse(requestId, response, error)
-                }
-                
+                val requestDoc = mapOf(
+                    "request_id" to requestId,
+                    "target_node_id" to targetNodeId,
+                    "messages" to messagesJson,
+                    "model" to model,
+                    "project_path" to projectPath,
+                    "status" to "pending",
+                    "timestamp" to (System.currentTimeMillis() / 1000.0)
+                )
+                core.insert("_requests", requestDoc)
+                Log.i(TAG, "🔮 CRDT chat request inserted: $requestId")
             } catch (e: Exception) {
-                Log.e(TAG, "Error handling inference request", e)
-                sendInferenceResponse(requestId, null, "Error: ${e.message}")
+                Log.e(TAG, "Failed to insert CRDT chat request", e)
+                pendingRequests.remove(requestId)
+                onResponse(null, "CRDT insert failed: ${e.message}")
             }
         }
     }
     
+    // Relay message handling removed — CRDT mesh handles all message routing
+    // Responses are watched via CRDT _responses collection polling
+    
     /**
-     * Send inference response back to requester.
+     * Send inference response back via CRDT mesh.
      */
     private fun sendInferenceResponse(requestId: String, response: String?, error: String?) {
-        val connection = meshConnection ?: return
+        val core = atmosphereCore ?: return
         
-        val payload = JSONObject().apply {
-            if (response != null) put("response", response)
-            if (error != null) put("error", error)
+        serviceScope.launch {
+            try {
+                val responseDoc = mapOf(
+                    "request_id" to requestId,
+                    "response" to (response ?: ""),
+                    "error" to (error ?: ""),
+                    "status" to if (error != null) "error" else "complete",
+                    "timestamp" to (System.currentTimeMillis() / 1000.0)
+                )
+                core.insert("_responses", responseDoc)
+                Log.d(TAG, "🔮 Sent inference_response via CRDT for $requestId")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to insert CRDT response", e)
+            }
         }
-        
-        val message = JSONObject().apply {
-            put("type", "inference_response")
-            put("request_id", requestId)
-            put("payload", payload)
-        }
-        
-        connection.sendMessage(message)
-        Log.d(TAG, "Sent inference_response for $requestId")
     }
 
     private fun stopNode() {
@@ -1194,6 +869,9 @@ class AtmosphereService : Service() {
                 // Still initialize capabilities in mock mode
                 initializeCapabilities(nodeId)
             }
+            
+            // Start CRDT mesh engine (runs alongside existing relay/WebSocket)
+            startCrdtMesh(nodeId)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize node", e)
             throw e
@@ -1208,7 +886,7 @@ class AtmosphereService : Service() {
             startCollecting(intervalMs = 10_000L)  // Collect every 10s
         }
         
-        // Initialize cost broadcaster (will start when mesh connection is set)
+        // Initialize cost broadcaster (broadcasts via CRDT mesh)
         costBroadcaster = CostBroadcaster(applicationContext, nodeId)
         
         // Initialize camera capability
@@ -1235,6 +913,110 @@ class AtmosphereService : Service() {
                    "stt=${voiceCapability?.sttAvailable?.value}, tts=${voiceCapability?.ttsAvailable?.value}")
     }
     
+    /**
+     * Start the CRDT mesh engine and local client TCP server.
+     * Runs alongside the existing relay/WebSocket transport.
+     */
+    private fun startCrdtMesh(nodeId: String) {
+        try {
+            val core = AtmosphereCore(
+                appId = "atmosphere",
+                peerId = nodeId.take(16),
+                metadata = mapOf("type" to "android-daemon", "name" to "BigLlama-Android"),
+                listenPort = 0,  // OS-assigned for mesh TCP
+                enableLan = true,
+            )
+            atmosphereCore = core
+            core.startSync()
+            Log.i(TAG, "🔮 CRDT mesh started: peerId=${core.peerId} (mesh port assigned async)")
+
+            // Periodically update CRDT state for UI + sync capabilities to GossipManager
+            serviceScope.launch {
+                var logged = false
+                while (true) {
+                    delay(3000)
+                    val c = atmosphereCore ?: break
+                    if (!logged && c.listenPort > 0) {
+                        Log.i(TAG, "🔮 CRDT mesh port assigned: ${c.listenPort}, peers: ${c.connectedPeers().size}")
+                        logged = true
+                    }
+                    val peers = c.connectedPeers()
+                    if (peers.isNotEmpty()) {
+                        Log.i(TAG, "🔮 CRDT peers: ${peers.size} — ${peers.map { it.peerId.take(8) }}")
+                    }
+                    _crdtPeers.value = peers
+
+                    // Sync CRDT _capabilities into GossipManager gradient table
+                    try {
+                        val caps = c.query("_capabilities")
+                        if (caps.isNotEmpty()) {
+                            val gossip = com.llamafarm.atmosphere.core.GossipManager.getInstance(applicationContext)
+                            for (doc in caps) {
+                                val peerIdVal = doc["peer_id"]?.toString() ?: doc["source"]?.toString() ?: continue
+                                if (peerIdVal == c.peerId) continue // skip own caps
+                                val name = doc["name"]?.toString() ?: "unknown"
+                                val desc = doc["description"]?.toString() ?: ""
+                                val capId = doc["_id"]?.toString() ?: "$peerIdVal:$name"
+                                val now = System.currentTimeMillis()
+                                val projectPath = doc["project_path"]?.toString() ?: "discoverable/$name"
+                                val modelActual = doc["model"]?.toString() ?: "unknown"
+                                val modelTier = doc["model_tier"]?.toString() ?: "small"
+                                val modelParamsB = (doc["model_params_b"] as? Number)?.toFloat() ?: 1.7f
+                                val hasRag = doc["has_rag"] == true
+                                val docNodeName = doc["node_name"]?.toString() ?: peerIdVal.take(8)
+
+                                // Parse keywords from CRDT doc
+                                val keywordsRaw = doc["keywords"]
+                                val keywordsList = when (keywordsRaw) {
+                                    is List<*> -> keywordsRaw.mapNotNull { it?.toString() }
+                                    else -> listOf(name)
+                                }
+
+                                val capObj = org.json.JSONObject().apply {
+                                    put("node_id", peerIdVal)
+                                    put("node_name", docNodeName)
+                                    put("capability_id", capId)
+                                    put("project_path", projectPath)
+                                    put("model_alias", "default")
+                                    put("model_actual", modelActual)
+                                    put("model_family", com.llamafarm.atmosphere.core.CapabilityAnnouncement.extractModelFamily(modelActual))
+                                    put("model_params_b", modelParamsB.toDouble())
+                                    put("model_tier", modelTier)
+                                    put("model_quantization", "")
+                                    put("capability_type", "llm/chat")
+                                    put("label", name)
+                                    put("description", desc)
+                                    put("has_rag", hasRag)
+                                    put("has_tools", false)
+                                    put("has_vision", false)
+                                    put("has_streaming", true)
+                                    put("hops", 0)
+                                    put("ttl", 10)
+                                    put("timestamp", now)
+                                    put("expires_at", now + 300_000)
+                                    put("keywords", org.json.JSONArray(keywordsList))
+                                    put("good_for", org.json.JSONArray(keywordsList.take(5)))
+                                    put("specializations", org.json.JSONArray(keywordsList.take(5)))
+                                }
+                                val envelope = org.json.JSONObject().apply {
+                                    put("type", "capability_announce")
+                                    put("node_name", docNodeName)
+                                    put("timestamp", now)
+                                    put("capabilities", org.json.JSONArray().put(capObj))
+                                }
+                                gossip.handleAnnouncement(peerIdVal, envelope)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to sync CRDT capabilities to gossip: ${e.message}")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start CRDT mesh", e)
+        }
+    }
+
     private fun registerDefaultCapabilities() {
         try {
             // Register camera capability
@@ -1286,17 +1068,17 @@ class AtmosphereService : Service() {
             localInferenceEngine?.destroy()
             localInferenceEngine = null
             
-            // Stop BLE mesh
-            bleMeshManager?.stop()
-            bleMeshManager = null
+            // Stop CRDT mesh
+            atmosphereCore?.stopSync()
+            atmosphereCore = null
+            
+            // BLE mesh removed - will be added back as Rust transport
             
             // Stop LAN discovery
             lanDiscovery?.stopDiscovery()
             lanDiscovery = null
             
-            // Disconnect mesh
-            meshConnection?.disconnect()
-            meshConnection = null
+            // Clear mesh state
             currentMeshId = null
             
             // Clear router
@@ -1414,31 +1196,7 @@ class AtmosphereService : Service() {
         }
     }
     
-    /**
-     * Set the mesh connection for cost broadcasting.
-     * Call this when joining a mesh.
-     */
-    fun setMeshConnection(connection: MeshConnection) {
-        meshConnection = connection
-        
-        // Start cost broadcasting
-        _nodeId.value?.let { nodeId ->
-            costBroadcaster?.start(connection, intervalMs = 30_000L)
-            Log.i(TAG, "Started cost broadcasting for $nodeId")
-        }
-        
-        // Register capabilities with mesh
-        meshCapabilityHandler?.setMeshConnection(connection)
-    }
-    
-    /**
-     * Stop mesh connection and cost broadcasting.
-     */
-    fun clearMeshConnection() {
-        costBroadcaster?.stop()
-        meshCapabilityHandler?.clearMeshConnection()
-        meshConnection = null
-    }
+    // setMeshConnection / clearMeshConnection removed — CRDT mesh is sole transport
     
     /**
      * Get the camera capability instance.
