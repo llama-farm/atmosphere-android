@@ -57,7 +57,7 @@ private const val TAG = "MainActivity"
 sealed class Screen(val route: String, val title: String, val icon: ImageVector?) {
     data object Dashboard : Screen("dashboard", "Dashboard", Icons.Default.Dashboard)
     data object Mesh : Screen("mesh", "Mesh", Icons.Default.Hub)
-    data object Capabilities : Screen("capabilities", "Caps", Icons.Default.Memory)
+    data object Models : Screen("models", "Models", Icons.Default.Memory)
     data object Routing : Screen("routing", "Routing", Icons.Default.Route)
     data object Logs : Screen("logs", "Logs", Icons.Default.Terminal)
     data object Settings : Screen("settings", "Settings", Icons.Default.Settings)
@@ -87,7 +87,7 @@ class MainActivity : ComponentActivity() {
     private val bottomScreens = listOf(
         Screen.Dashboard,
         Screen.Mesh,
-        Screen.Capabilities,
+        Screen.Models,
         Screen.Routing,
         Screen.Logs,
     )
@@ -348,7 +348,7 @@ fun AtmosphereDebuggerApp(
         ) {
             composable(Screen.Dashboard.route) { DashboardScreen(debugViewModel) }
             composable(Screen.Mesh.route) { MeshPeersScreen(debugViewModel) }
-            composable(Screen.Capabilities.route) { CapabilitiesScreen(debugViewModel) }
+            composable(Screen.Models.route) { ModelsScreenNew(debugViewModel) }
             composable(Screen.Routing.route) { RoutingScreen(debugViewModel) }
             composable(Screen.Logs.route) { LogsScreen(debugViewModel) }
             composable(Screen.Settings.route) { SettingsScreenNew(debugViewModel) }

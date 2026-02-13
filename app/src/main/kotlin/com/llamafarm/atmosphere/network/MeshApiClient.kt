@@ -130,6 +130,22 @@ data class LogEntry(
     val message: String
 )
 
+data class TransferInfo(
+    val id: String,
+    val modelId: String,
+    val modelName: String?,
+    val fromPeer: String,
+    val fromPeerName: String?,
+    val toPeer: String,
+    val toPeerName: String?,
+    val status: String,
+    val progress: Float,
+    val bytesTransferred: Long?,
+    val totalBytes: Long?,
+    val createdAt: Long,
+    val updatedAt: Long
+)
+
 /**
  * HTTP API client for the Atmosphere mesh dashboard.
  * Mirrors the JavaScript fetch calls in dashboard.html.

@@ -1155,7 +1155,7 @@ class AtmosphereService : Service() {
                 registerLlama32Capability(peerId, deviceModel, deviceInfo)
                 
                 // 2. Detect and register Gemini Nano via ML Kit GenAI
-                registerGeminiNanoCapability(peerId, deviceModel, deviceInfo)
+                registerUniversalAICapabilities(peerId, deviceModel, deviceInfo)
                 
                 // 3. Register text embedding capability
                 registerEmbeddingCapability(peerId, deviceModel, deviceInfo)
@@ -1227,127 +1227,7 @@ class AtmosphereService : Service() {
         }
     }
     
-    /**
-     * Detect and register Gemini Nano capability via ML Kit GenAI.
-     */
-    private suspend fun registerGeminiNanoCapability(peerId: String, deviceModel: String, deviceInfo: org.json.JSONObject) {
-        val handle = atmosphereHandle
-        if (handle == 0L) return
-        
-        try {
-            val geminiInfo = com.llamafarm.atmosphere.capabilities.GeminiNanoDetector.detect(applicationContext)
-            
-            if (geminiInfo != null) {
-                Log.i(TAG, "🔍 Gemini Nano detected: ${geminiInfo.status}, version=${geminiInfo.version}")
-                
-                // Register Gemini Nano prompt capability
-                if (geminiInfo.status in listOf("AVAILABLE", "DOWNLOADABLE", "DOWNLOADING")) {
-                    val geminiDoc = org.json.JSONObject().apply {
-                        put("id", "local:gemini-nano:${geminiInfo.version ?: "v2"}")
-                        put("peer_id", peerId)
-                        put("peer_name", deviceModel)
-                        put("capability_type", "llm")
-                        put("description", "Google Gemini Nano ${geminiInfo.version ?: "v2"} — on-device multimodal AI via ML Kit")
-                        put("model", "gemini-nano-${geminiInfo.version ?: "v2"}")
-                        put("keywords", org.json.JSONArray(listOf(
-                            "google", "gemini", "nano", "on-device", "multimodal", 
-                            "prompt", "vision", "ml-kit", geminiInfo.status.toLowerCase()
-                        )))
-                        put("device_info", deviceInfo)
-                        put("llm_info", org.json.JSONObject().apply {
-                            put("model_name", "Gemini Nano ${geminiInfo.version ?: "v2"}")
-                            put("model_tier", "small")
-                            put("model_params_b", if (geminiInfo.version == "nano-v3") 4.0 else 2.7)
-                            put("context_length", 4000)
-                            put("supports_tools", false)
-                            put("supports_vision", true)
-                            put("has_rag", false)
-                            put("aicore_status", geminiInfo.status)
-                            put("capabilities", org.json.JSONArray(geminiInfo.capabilities))
-                        })
-                        put("cost", org.json.JSONObject().apply {
-                            put("local", true)
-                            put("estimated_cost", 0.0)
-                            put("battery_impact", 0.4)
-                        })
-                        put("status", org.json.JSONObject().apply {
-                            put("available", geminiInfo.available)
-                            put("load", 0.0)
-                            put("last_seen", System.currentTimeMillis() / 1000)
-                        })
-                        put("hops", 0)
-                    }
-                    
-                    AtmosphereNative.insert(handle, "_capabilities", "local:gemini-nano:${geminiInfo.version ?: "v2"}", geminiDoc.toString())
-                    Log.i(TAG, "✅ Registered Gemini Nano ${geminiInfo.version ?: "v2"} capability (${geminiInfo.status})")
-                    
-                    // Register individual ML Kit GenAI feature capabilities
-                    for (capability in geminiInfo.capabilities) {
-                        if (capability != "prompt") { // prompt is already registered above
-                            registerMlKitFeature(peerId, deviceModel, deviceInfo, capability, geminiInfo.version)
-                        }
-                    }
-                }
-            } else {
-                Log.d(TAG, "Gemini Nano not available on this device")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to detect Gemini Nano: ${e.message}")
-        }
-    }
     
-    /**
-     * Register a specific ML Kit GenAI feature capability.
-     */
-    private fun registerMlKitFeature(
-        peerId: String,
-        deviceModel: String,
-        deviceInfo: org.json.JSONObject,
-        feature: String,
-        nanoVersion: String?
-    ) {
-        val handle = atmosphereHandle
-        if (handle == 0L) return
-        
-        try {
-            val featureInfo = when (feature) {
-                "summarization" -> Triple("Summarization", "Summarize articles or chat conversations", listOf("summarize", "summary", "tldr"))
-                "proofreading" -> Triple("Proofreading", "Polish content by refining grammar and fixing spelling", listOf("grammar", "spelling", "proofread"))
-                "rewriting" -> Triple("Rewriting", "Rewrite messages in different tones or styles", listOf("rewrite", "rephrase", "tone"))
-                "image_description" -> Triple("Image Description", "Generate descriptions of images", listOf("vision", "image", "describe", "caption"))
-                else -> return
-            }
-            
-            val (name, desc, keywords) = featureInfo
-            
-            val featureDoc = org.json.JSONObject().apply {
-                put("id", "local:gemini-nano-$feature:$nanoVersion")
-                put("peer_id", peerId)
-                put("peer_name", deviceModel)
-                put("capability_type", "ml-kit-$feature")
-                put("description", "$name via Gemini Nano — $desc")
-                put("model", "gemini-nano-$nanoVersion-$feature")
-                put("keywords", org.json.JSONArray(keywords + listOf("gemini", "nano", "ml-kit", "on-device")))
-                put("device_info", deviceInfo)
-                put("cost", org.json.JSONObject().apply {
-                    put("local", true)
-                    put("estimated_cost", 0.0)
-                    put("battery_impact", 0.2)
-                })
-                put("status", org.json.JSONObject().apply {
-                    put("available", true)
-                    put("load", 0.0)
-                    put("last_seen", System.currentTimeMillis() / 1000)
-                })
-                put("hops", 0)
-            }
-            
-            AtmosphereNative.insert(handle, "_capabilities", "local:gemini-nano-$feature:$nanoVersion", featureDoc.toString())
-            Log.i(TAG, "✅ Registered ML Kit $name capability")
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to register ML Kit $feature: ${e.message}")
-        }
-    }
     
     /**
      * Register text embedding capability (all-MiniLM-L6-v2 via ONNX).
@@ -1391,6 +1271,90 @@ class AtmosphereService : Service() {
             Log.e(TAG, "Failed to register embedding capability", e)
         }
     }
+
+        /**
+         * Detect and register all available AI capabilities using universal detection.
+         * Works across all Android vendors (Google, Samsung, Qualcomm, MediaTek).
+         */
+        private suspend fun registerUniversalAICapabilities(peerId: String, deviceModel: String, deviceInfo: org.json.JSONObject) {
+            val handle = atmosphereHandle
+            if (handle == 0L) return
+            
+            try {
+                // Detect all AI capabilities on this device
+                val detectedCapabilities = com.llamafarm.atmosphere.capabilities.UniversalAIDetector.detectAll(applicationContext)
+                
+                Log.i(TAG, "🔍 Detected ${detectedCapabilities.size} AI capabilities")
+                
+                for (cap in detectedCapabilities) {
+                    try {
+                        // Convert UniversalAIDetector.AICapability to CRDT capability document
+                        val capDoc = org.json.JSONObject().apply {
+                            put("_id", cap.id)
+                            put("peer_id", peerId)
+                            put("peer_name", deviceModel)
+                            put("capability_type", cap.type)
+                            put("name", cap.name)
+                            put("vendor", cap.vendor)
+                            put("runtime", cap.runtime)
+                            put("available", cap.available)
+                            
+                            // Add version if present
+                            cap.version?.let { put("version", it) }
+                            
+                            // Add device info
+                            put("device_info", deviceInfo)
+                            
+                            // Add model-specific info
+                            val modelInfoObj = org.json.JSONObject()
+                            for ((key, value) in cap.modelInfo) {
+                                modelInfoObj.put(key, value)
+                            }
+                            put("model_info", modelInfoObj)
+                            
+                            // Add standard capability metadata
+                            put("cost", org.json.JSONObject().apply {
+                                put("local", true)
+                                put("estimated_cost", 0.0)
+                                put("battery_impact", when(cap.type) {
+                                    "accelerator" -> 0.1
+                                    "embedding" -> 0.2
+                                    "llm" -> 0.4
+                                    "vision" -> 0.3
+                                    else -> 0.2
+                                })
+                            })
+                            
+                            put("status", org.json.JSONObject().apply {
+                                put("available", cap.available)
+                                put("load", 0.0)
+                                put("last_seen", System.currentTimeMillis() / 1000)
+                            })
+                            
+                            put("hops", 0)
+                            put("timestamp", System.currentTimeMillis())
+                        }
+                        
+                        AtmosphereNative.insert(handle, "_capabilities", cap.id, capDoc.toString())
+                        Log.i(TAG, "✅ Registered capability: ${cap.id} (${cap.vendor} - ${cap.name})")
+                        
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to register capability ${cap.id}", e)
+                    }
+                }
+                
+                // Summary log
+                val byVendor = detectedCapabilities.groupBy { it.vendor }
+                val summary = byVendor.map { (vendor, caps) ->
+                    "$vendor: ${caps.size} (${caps.map { it.type }.distinct().joinToString()})"
+                }.joinToString(", ")
+                
+                Log.i(TAG, "📱 AI Capabilities Summary: $summary")
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to detect universal AI capabilities", e)
+            }
+        }
 
     private fun registerDefaultCapabilities() {
         try {

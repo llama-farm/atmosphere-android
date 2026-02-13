@@ -55,6 +55,9 @@ class MeshDebugViewModel(application: Application) : AndroidViewModel(applicatio
     private val _requests = MutableStateFlow<List<MeshRequestInfo>>(emptyList())
     val requests: StateFlow<List<MeshRequestInfo>> = _requests.asStateFlow()
 
+    private val _transfers = MutableStateFlow<List<com.llamafarm.atmosphere.network.TransferInfo>>(emptyList())
+    val transfers: StateFlow<List<com.llamafarm.atmosphere.network.TransferInfo>> = _transfers.asStateFlow()
+
     // Routing test state
     private val _routingHistory = MutableStateFlow<List<RoutingTestResult>>(emptyList())
     val routingHistory: StateFlow<List<RoutingTestResult>> = _routingHistory.asStateFlow()
@@ -162,6 +165,12 @@ class MeshDebugViewModel(application: Application) : AndroidViewModel(applicatio
                         try {
                             val reqsData = AtmosphereNative.query(handle, "_requests")
                             _requests.value = parseRequests(reqsData)
+                        } catch (_: Exception) {}
+
+                        // --- Transfers from CRDT ---
+                        try {
+                            val transfersData = AtmosphereNative.query(handle, "_transfers")
+                            _transfers.value = parseTransfers(transfersData)
                         } catch (_: Exception) {}
 
                     } else {
@@ -314,6 +323,34 @@ class MeshDebugViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    private fun parseTransfers(json: String): List<com.llamafarm.atmosphere.network.TransferInfo> {
+        return try {
+            val array = JSONArray(json)
+            (0 until array.length()).mapNotNull { i ->
+                val obj = array.getJSONObject(i)
+                val progress = obj.optDouble("progress", 0.0).toFloat()
+                com.llamafarm.atmosphere.network.TransferInfo(
+                    id = obj.optString("_id", obj.optString("transfer_id", "")),
+                    modelId = obj.optString("model_id", ""),
+                    modelName = obj.optString("model_name", null),
+                    fromPeer = obj.optString("from_peer", ""),
+                    fromPeerName = obj.optString("from_peer_name", null),
+                    toPeer = obj.optString("to_peer", ""),
+                    toPeerName = obj.optString("to_peer_name", null),
+                    status = obj.optString("status", "pending"),
+                    progress = progress,
+                    bytesTransferred = if (obj.has("bytes_transferred")) obj.optLong("bytes_transferred") else null,
+                    totalBytes = if (obj.has("total_bytes")) obj.optLong("total_bytes") else null,
+                    createdAt = obj.optLong("created_at", 0),
+                    updatedAt = obj.optLong("updated_at", 0)
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "parseTransfers failed", e)
+            emptyList()
+        }
+    }
+
     // --- Device Metrics ---
 
     private fun collectLocalDeviceMetrics(): DeviceMetrics {
@@ -419,6 +456,69 @@ class MeshDebugViewModel(application: Application) : AndroidViewModel(applicatio
     // Compat stub for settings screen
     fun setApiUrl(url: String) {
         addLog("info", "config", "Ignored — debugger uses local JNI, not HTTP")
+    }
+
+    /**
+     * Initiate a model transfer from a mesh peer to this device.
+     * Writes a transfer request to the _transfers CRDT collection.
+     */
+    fun initiateTransfer(modelId: String, fromPeer: String, modelName: String? = null) {
+        viewModelScope.launch {
+            try {
+                val handle = getHandle()
+                if (handle != null && handle != 0L) {
+                    val localPeerId = _health.value?.peerId ?: "unknown"
+                    val transferId = "xfer_${java.util.UUID.randomUUID()}"
+                    val now = System.currentTimeMillis()
+                    
+                    val transferDoc = JSONObject().apply {
+                        put("transfer_id", transferId)
+                        put("model_id", modelId)
+                        put("model_name", modelName ?: modelId)
+                        put("from_peer", fromPeer)
+                        put("to_peer", localPeerId)
+                        put("status", "pending")
+                        put("progress", 0.0)
+                        put("created_at", now)
+                        put("updated_at", now)
+                    }
+                    
+                    AtmosphereNative.insert(handle, "_transfers", transferId, transferDoc.toString())
+                    addLog("info", "transfers", "Initiated transfer: $modelName from $fromPeer")
+                } else {
+                    addLog("error", "transfers", "Cannot initiate transfer: Rust core not available")
+                }
+            } catch (e: Exception) {
+                addLog("error", "transfers", "Failed to initiate transfer: ${e.message}")
+                Log.e(TAG, "initiateTransfer failed", e)
+            }
+        }
+    }
+
+    /**
+     * Cancel an active transfer by updating its status in the CRDT.
+     */
+    fun cancelTransfer(transferId: String) {
+        viewModelScope.launch {
+            try {
+                val handle = getHandle()
+                if (handle != null && handle != 0L) {
+                    val transferDoc = JSONObject().apply {
+                        put("status", "cancelled")
+                        put("updated_at", System.currentTimeMillis())
+                    }
+                    
+                    // Update the existing transfer document
+                    AtmosphereNative.insert(handle, "_transfers", transferId, transferDoc.toString())
+                    addLog("info", "transfers", "Cancelled transfer: $transferId")
+                } else {
+                    addLog("error", "transfers", "Cannot cancel transfer: Rust core not available")
+                }
+            } catch (e: Exception) {
+                addLog("error", "transfers", "Failed to cancel transfer: ${e.message}")
+                Log.e(TAG, "cancelTransfer failed", e)
+            }
+        }
     }
 
     override fun onCleared() {
