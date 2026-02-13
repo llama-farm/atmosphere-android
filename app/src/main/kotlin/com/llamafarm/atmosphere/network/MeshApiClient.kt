@@ -146,6 +146,18 @@ data class TransferInfo(
     val updatedAt: Long
 )
 
+data class ProjectInfo(
+    val namespace: String,
+    val projectId: String,
+    val name: String,
+    val model: String?,
+    val modelProvider: String?,
+    val description: String?,
+    val hasRag: Boolean,
+    val hasTools: Boolean,
+    val isDiscoverable: Boolean
+)
+
 /**
  * HTTP API client for the Atmosphere mesh dashboard.
  * Mirrors the JavaScript fetch calls in dashboard.html.
@@ -510,6 +522,64 @@ class MeshApiClient(
             response.close()
             json
         } catch (e: Exception) { null }
+    }
+
+    // --- Project management (calls Mac daemon HTTP API) ---
+
+    suspend fun fetchProjects(): List<ProjectInfo> = withContext(Dispatchers.IO) {
+        try {
+            val json = getJson("/api/projects") ?: return@withContext emptyList()
+            val arr = json.optJSONArray("projects") ?: return@withContext emptyList()
+            (0 until arr.length()).mapNotNull { i ->
+                try {
+                    val p = arr.getJSONObject(i)
+                    ProjectInfo(
+                        namespace = p.optString("namespace", ""),
+                        projectId = p.optString("project_id", ""),
+                        name = p.optString("name", ""),
+                        model = p.optString("model").takeIf { it.isNotEmpty() },
+                        modelProvider = p.optString("model_provider").takeIf { it.isNotEmpty() },
+                        description = p.optString("description").takeIf { it.isNotEmpty() },
+                        hasRag = p.optBoolean("has_rag", false),
+                        hasTools = p.optBoolean("has_tools", false),
+                        isDiscoverable = p.optBoolean("is_discoverable", false)
+                    )
+                } catch (e: Exception) { null }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fetchProjects failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    suspend fun exposeProject(namespace: String, projectId: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val body = JSONObject().put("namespace", namespace).put("project_id", projectId).toString()
+                .toRequestBody("application/json".toMediaType())
+            val request = Request.Builder().url("$baseUrl/api/projects/expose").post(body).build()
+            val response = client.newCall(request).execute()
+            val json = JSONObject(response.body?.string() ?: "{}")
+            response.close()
+            json.optBoolean("ok", false)
+        } catch (e: Exception) {
+            Log.w(TAG, "exposeProject failed: ${e.message}")
+            false
+        }
+    }
+
+    suspend fun hideProject(projectId: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val body = JSONObject().put("project_id", projectId).toString()
+                .toRequestBody("application/json".toMediaType())
+            val request = Request.Builder().url("$baseUrl/api/projects/hide").post(body).build()
+            val response = client.newCall(request).execute()
+            val json = JSONObject(response.body?.string() ?: "{}")
+            response.close()
+            json.optBoolean("ok", false)
+        } catch (e: Exception) {
+            Log.w(TAG, "hideProject failed: ${e.message}")
+            false
+        }
     }
 
     fun close() {

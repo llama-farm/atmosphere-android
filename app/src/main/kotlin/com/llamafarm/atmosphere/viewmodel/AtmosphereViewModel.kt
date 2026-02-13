@@ -13,11 +13,11 @@ import com.llamafarm.atmosphere.service.SimplePeerInfo
 import com.llamafarm.atmosphere.data.AtmospherePreferences
 import com.llamafarm.atmosphere.data.SavedMesh
 import com.llamafarm.atmosphere.data.SavedMeshRepository
-import com.llamafarm.atmosphere.data.MeshRepository
 import com.llamafarm.atmosphere.data.HttpMeshPeer
 import com.llamafarm.atmosphere.data.HttpMeshCapability
 import com.llamafarm.atmosphere.data.BigLlamaStatus
 import com.llamafarm.atmosphere.data.HttpMeshNodeInfo
+// MeshRepository REMOVED — all mesh data comes from CRDT/JNI now
 // RelayPeer import removed — CRDT mesh replaces relay
 import com.llamafarm.atmosphere.network.TransportStatus
 import com.llamafarm.atmosphere.router.SemanticRouter
@@ -143,11 +143,8 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
     val bleEnabled: StateFlow<Boolean> = _bleEnabled.asStateFlow()
     
     // ============================================================================
-    // Mesh Integration - atmosphere-core mesh (localhost:11462)
+    // Mesh Integration - CRDT/JNI only (HTTP polling removed)
     // ============================================================================
-    
-    // Mesh repository for HTTP communication
-    private val meshHttpClient = MeshRepository()
     
     // Mesh connection state
     private val _meshConnected = MutableStateFlow(false)
@@ -503,55 +500,10 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
     }
     
     private fun startMeshPolling() {
-        Log.i(TAG, "🔧 Starting mesh polling")
-        meshHttpClient.startPolling(intervalMs = 5000)
+        Log.i(TAG, "🔧 Starting mesh polling (CRDT/JNI only)")
         
-        // Also observe CRDT mesh directly from service
+        // Observe CRDT mesh directly from service — this is the only data source
         observeCrdtMeshState()
-        
-        // Observe mesh state flows (HTTP-based, kept as fallback)
-        viewModelScope.launch {
-            meshHttpClient.isConnected.collect { connected ->
-                // Only update if Atmosphere core isn't running
-                if (serviceConnector?.getService()?.getAtmosphereHandle() == 0L) {
-                    _meshConnected.value = connected
-                }
-                if (connected) {
-                    Log.d(TAG, "✅ Mesh active")
-                } else {
-                    Log.d(TAG, "❌ Mesh inactive")
-                }
-            }
-        }
-        
-        viewModelScope.launch {
-            meshHttpClient.peers.collect { peers ->
-                _meshPeers.value = peers
-                Log.d(TAG, "Mesh peers updated: ${peers.size}")
-            }
-        }
-        
-        viewModelScope.launch {
-            meshHttpClient.capabilities.collect { caps ->
-                _meshCapabilities.value = caps
-                Log.d(TAG, "Mesh capabilities updated: ${caps.size}")
-            }
-        }
-        
-        viewModelScope.launch {
-            meshHttpClient.bigLlamaStatus.collect { status ->
-                _bigLlamaStatus.value = status
-                status?.let {
-                    Log.d(TAG, "BigLlama status: ${it.mode}")
-                }
-            }
-        }
-        
-        viewModelScope.launch {
-            meshHttpClient.meshInfo.collect { info ->
-                _meshInfo.value = info
-            }
-        }
     }
     
     /**
@@ -1283,7 +1235,6 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
     override fun onCleared() {
         super.onCleared()
         Log.i(TAG, "ViewModel clearing - stopping mesh polling")
-        meshHttpClient.close()
         stopBle()
     }
 }

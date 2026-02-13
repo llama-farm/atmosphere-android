@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -60,6 +61,7 @@ sealed class Screen(val route: String, val title: String, val icon: ImageVector?
     data object Models : Screen("models", "Models", Icons.Default.Memory)
     data object Routing : Screen("routing", "Routing", Icons.Default.Route)
     data object Logs : Screen("logs", "Logs", Icons.Default.Terminal)
+    data object Projects : Screen("projects", "Projects", Icons.Default.Folder)
     data object Settings : Screen("settings", "Settings", Icons.Default.Settings)
 
     // Legacy routes kept for deep link / service compat
@@ -87,7 +89,7 @@ class MainActivity : ComponentActivity() {
     private val bottomScreens = listOf(
         Screen.Dashboard,
         Screen.Mesh,
-        Screen.Models,
+        Screen.Projects,
         Screen.Routing,
         Screen.Logs,
     )
@@ -349,6 +351,7 @@ fun AtmosphereDebuggerApp(
             composable(Screen.Dashboard.route) { DashboardScreen(debugViewModel) }
             composable(Screen.Mesh.route) { MeshPeersScreen(debugViewModel) }
             composable(Screen.Models.route) { ModelsScreenNew(debugViewModel) }
+            composable(Screen.Projects.route) { ProjectsScreen(debugViewModel) }
             composable(Screen.Routing.route) { RoutingScreen(debugViewModel) }
             composable(Screen.Logs.route) { LogsScreen(debugViewModel) }
             composable(Screen.Settings.route) { SettingsScreenNew(debugViewModel) }

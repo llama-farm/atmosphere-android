@@ -58,6 +58,15 @@ class MeshDebugViewModel(application: Application) : AndroidViewModel(applicatio
     private val _transfers = MutableStateFlow<List<com.llamafarm.atmosphere.network.TransferInfo>>(emptyList())
     val transfers: StateFlow<List<com.llamafarm.atmosphere.network.TransferInfo>> = _transfers.asStateFlow()
 
+    // Project state (fetched from Mac daemon via HTTP)
+    private val _projects = MutableStateFlow<List<ProjectInfo>>(emptyList())
+    val projects: StateFlow<List<ProjectInfo>> = _projects.asStateFlow()
+
+    private val _projectsLoading = MutableStateFlow(false)
+    val projectsLoading: StateFlow<Boolean> = _projectsLoading.asStateFlow()
+
+    private val projectApiClient = MeshApiClient("http://192.168.86.237:11472")
+
     // Routing test state
     private val _routingHistory = MutableStateFlow<List<RoutingTestResult>>(emptyList())
     val routingHistory: StateFlow<List<RoutingTestResult>> = _routingHistory.asStateFlow()
@@ -517,6 +526,44 @@ class MeshDebugViewModel(application: Application) : AndroidViewModel(applicatio
             } catch (e: Exception) {
                 addLog("error", "transfers", "Failed to cancel transfer: ${e.message}")
                 Log.e(TAG, "cancelTransfer failed", e)
+            }
+        }
+    }
+
+    // --- Project management (HTTP to Mac daemon) ---
+
+    fun loadProjects() {
+        viewModelScope.launch {
+            _projectsLoading.value = true
+            try {
+                _projects.value = projectApiClient.fetchProjects()
+            } catch (e: Exception) {
+                Log.e(TAG, "loadProjects failed", e)
+            }
+            _projectsLoading.value = false
+        }
+    }
+
+    fun exposeProject(namespace: String, projectId: String) {
+        viewModelScope.launch {
+            try {
+                if (projectApiClient.exposeProject(namespace, projectId)) {
+                    loadProjects()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "exposeProject failed", e)
+            }
+        }
+    }
+
+    fun hideProject(projectId: String) {
+        viewModelScope.launch {
+            try {
+                if (projectApiClient.hideProject(projectId)) {
+                    loadProjects()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "hideProject failed", e)
             }
         }
     }

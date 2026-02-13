@@ -23,6 +23,7 @@ import com.llamafarm.atmosphere.cost.CostCollector
 import com.llamafarm.atmosphere.cost.CostFactors
 import com.llamafarm.atmosphere.data.AtmospherePreferences
 import com.llamafarm.atmosphere.discovery.LanDiscovery
+import com.llamafarm.atmosphere.mesh.MeshRequestProcessor
 // MeshConnection/relay imports removed — CRDT mesh is sole transport
 // import com.llamafarm.atmosphere.network.MeshConnection
 // import com.llamafarm.atmosphere.network.ConnectionState
@@ -203,6 +204,9 @@ class AtmosphereService : Service() {
     // Local inference engine
     private var localInferenceEngine: LocalInferenceEngine? = null
     
+    // Mesh request processor (handles inbound inference requests from peers)
+    private var meshRequestProcessor: MeshRequestProcessor? = null
+    
     // Pending inference requests: requestId -> callback
     private val pendingRequests = ConcurrentHashMap<String, (String?, String?) -> Unit>()
     
@@ -270,6 +274,8 @@ class AtmosphereService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        meshRequestProcessor?.stop()
+        meshRequestProcessor = null
         stopNode()
         serviceScope.cancel()
         Log.d(TAG, "Service destroyed")
@@ -965,6 +971,12 @@ class AtmosphereService : Service() {
 
             // Register this device's capabilities into CRDT mesh
             registerDeviceCapabilities(nodeId.take(16))
+
+            // Start mesh request processor (handles inbound inference requests)
+            meshRequestProcessor = MeshRequestProcessor(atmosphereHandle, applicationContext).also {
+                it.start()
+            }
+            Log.i(TAG, "🔮 Mesh request processor started")
 
             // Periodically update mesh state for UI + sync capabilities to GossipManager
             serviceScope.launch {
