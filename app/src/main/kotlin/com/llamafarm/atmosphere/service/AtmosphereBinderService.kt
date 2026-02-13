@@ -64,7 +64,7 @@ class AtmosphereBinderService : Service() {
     private var capabilityIdCounter = 0
     
     // CRDT observer tracking: collection -> list of observer IDs
-    private val crdtObserverIds = mutableMapOf<String, MutableList<Int>>()
+    private val crdtObserverIds = mutableMapOf<String, MutableList<String>>()
     
     // RAG store for on-device knowledge retrieval
     private val ragStore = LocalRagStore()
@@ -185,6 +185,9 @@ class AtmosphereBinderService : Service() {
                         "timestamp" to System.currentTimeMillis(),
                         "source" to "android"
                     ))
+                    
+                    // Trigger immediate sync so the request reaches peers ASAP
+                    crdtCore.syncNow()
                     
                     // Wait for response via CRDT _responses (30s timeout)
                     val latch = java.util.concurrent.CountDownLatch(1)
@@ -1158,6 +1161,7 @@ class AtmosphereBinderService : Service() {
                 val data = mutableMapOf<String, Any>()
                 json.keys().forEach { key -> data[key] = json.get(key) }
                 core.insert(collection, data)
+                docJson  // Return the inserted document
             } catch (e: Exception) {
                 Log.e(TAG, "crdtInsert() error", e)
                 null
@@ -1448,9 +1452,17 @@ Question: $query
     }
     
     /**
-     * Get the AtmosphereCore (CRDT engine) from the running AtmosphereService.
+     * Get the Atmosphere handle from the running AtmosphereService.
      */
-    private fun getCrdtCore(): com.llamafarm.atmosphere.core.AtmosphereCore? {
+    private fun getAtmosphereHandle(): Long {
+        val connector = ServiceManager.getConnector()
+        return connector.getService()?.getAtmosphereHandle() ?: 0L
+    }
+    
+    /**
+     * Get the CRDT core wrapper from the running AtmosphereService.
+     */
+    private fun getCrdtCore(): com.llamafarm.atmosphere.core.CrdtCoreWrapper? {
         val connector = ServiceManager.getConnector()
         return connector.getService()?.getAtmosphereCore()
     }

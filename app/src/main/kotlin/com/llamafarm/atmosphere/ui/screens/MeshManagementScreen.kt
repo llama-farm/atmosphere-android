@@ -91,7 +91,7 @@ fun MeshManagementScreen(
                             )
                             meshInfo!!.peers.forEach { peer ->
                                 Text(
-                                    text = "• ${peer.peerId.take(12)}... (${peer.transport})",
+                                    text = "• ${peer.peerId.take(12)}... (${peer.transports.firstOrNull() ?: "unknown"})",
                                     style = MaterialTheme.typography.bodySmall,
                                     modifier = Modifier.padding(start = 8.dp)
                                 )

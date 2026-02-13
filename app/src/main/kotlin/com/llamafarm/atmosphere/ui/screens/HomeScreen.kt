@@ -154,7 +154,7 @@ fun HomeScreen(viewModel: AtmosphereViewModel) {
         Spacer(modifier = Modifier.height(16.dp))
         
         // 🔧 DAEMON STATUS CARD - atmosphere-core integration
-        DaemonStatusCard(viewModel)
+        MeshStatusCard(viewModel)
         
         Spacer(modifier = Modifier.height(16.dp))
         
@@ -1125,20 +1125,20 @@ private fun MeshStatusCard(
 }
 
 /**
- * Daemon Status Card - Shows atmosphere-core daemon connection and stats
+ * Mesh Status Card - Shows atmosphere-core mesh status
  */
 @Composable
-fun DaemonStatusCard(viewModel: AtmosphereViewModel) {
-    val daemonConnected by viewModel.daemonConnected.collectAsState()
-    val daemonPeers by viewModel.daemonPeers.collectAsState()
-    val daemonCapabilities by viewModel.daemonCapabilities.collectAsState()
+fun MeshStatusCard(viewModel: AtmosphereViewModel) {
+    val meshConnected by viewModel.meshConnected.collectAsState()
+    val meshPeers by viewModel.meshPeers.collectAsState()
+    val meshCapabilities by viewModel.meshCapabilities.collectAsState()
     val bigLlamaStatus by viewModel.bigLlamaStatus.collectAsState()
-    val daemonInfo by viewModel.daemonInfo.collectAsState()
+    val meshInfo by viewModel.meshInfo.collectAsState()
     
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
-            containerColor = if (daemonConnected) {
+            containerColor = if (meshConnected) {
                 Color(0xFF1E3A5F).copy(alpha = 0.3f)
             } else {
                 Color(0xFF424242).copy(alpha = 0.3f)
@@ -1156,12 +1156,12 @@ fun DaemonStatusCard(viewModel: AtmosphereViewModel) {
                     Icon(
                         Icons.Default.Memory,
                         contentDescription = null,
-                        tint = if (daemonConnected) StatusOnline else StatusOffline,
+                        tint = if (meshConnected) StatusOnline else StatusOffline,
                         modifier = Modifier.size(20.dp)
                     )
                     Spacer(Modifier.width(8.dp))
                     Text(
-                        text = "Daemon",
+                        text = "Mesh Node",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
@@ -1177,30 +1177,30 @@ fun DaemonStatusCard(viewModel: AtmosphereViewModel) {
                         modifier = Modifier
                             .size(8.dp)
                             .background(
-                                color = if (daemonConnected) StatusOnline else StatusOffline,
+                                color = if (meshConnected) StatusOnline else StatusOffline,
                                 shape = androidx.compose.foundation.shape.CircleShape
                             )
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        text = if (daemonConnected) "Connected" else "Offline",
+                        text = if (meshConnected) "Mesh Active" else "Mesh Inactive",
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (daemonConnected) StatusOnline else StatusOffline
+                        color = if (meshConnected) StatusOnline else StatusOffline
                     )
                 }
             }
             
-            if (daemonConnected && daemonInfo != null) {
+            if (meshConnected && meshInfo != null) {
                 Spacer(Modifier.height(12.dp))
                 
-                // Daemon info
+                // Mesh node info
                 Text(
-                    text = daemonInfo?.nodeName ?: "Unknown",
+                    text = meshInfo?.nodeName ?: "Unknown",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium
                 )
                 Text(
-                    text = "Node ID: ${daemonInfo?.nodeId?.take(16)}...",
+                    text = "Node ID: ${meshInfo?.nodeId?.take(16)}...",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1215,7 +1215,7 @@ fun DaemonStatusCard(viewModel: AtmosphereViewModel) {
                     // Peer count
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "${daemonPeers.size}",
+                            text = "${meshPeers.size}",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
@@ -1230,7 +1230,7 @@ fun DaemonStatusCard(viewModel: AtmosphereViewModel) {
                     // Capability count
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "${daemonCapabilities.size}",
+                            text = "${meshCapabilities.size}",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
@@ -1272,10 +1272,10 @@ fun DaemonStatusCard(viewModel: AtmosphereViewModel) {
                         )
                     }
                 }
-            } else if (!daemonConnected) {
+            } else if (!meshConnected) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = "Daemon not reachable. Ensure adb reverse is configured:\nadb reverse tcp:11462 tcp:11462",
+                    text = "No mesh peers discovered yet. Ensure devices are on the same WiFi network.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

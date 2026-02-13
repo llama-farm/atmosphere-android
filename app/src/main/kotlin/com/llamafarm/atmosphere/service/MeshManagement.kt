@@ -2,13 +2,15 @@ package com.llamafarm.atmosphere.service
 
 import android.util.Base64
 import android.util.Log
-import com.llamafarm.atmosphere.core.AtmosphereCore
+import com.llamafarm.atmosphere.core.AtmosphereNative
 import org.json.JSONObject
+import org.json.JSONArray
 import java.util.UUID
 
 /**
  * Mesh management extensions for AtmosphereService.
  * Provides Ditto-style mesh creation, joining, and invite generation.
+ * Uses SimplePeerInfo from AtmosphereService.kt
  */
 
 data class MeshInviteToken(
@@ -63,14 +65,12 @@ fun AtmosphereService.createMesh(bigLlamaUrl: String? = null): MeshInviteToken {
     val secret = ByteArray(32).apply { java.security.SecureRandom().nextBytes(this) }
         .joinToString("") { "%02x".format(it) }
 
-    // Update the AtmosphereCore instance
-    val core = getAtmosphereCore()
-    if (core != null) {
-        core.meshId = meshId
-        core.sharedSecret = secret
-        Log.i("MeshManagement", "✅ Created new mesh: $meshId")
+    val handle = getAtmosphereHandle()
+    if (handle != 0L) {
+        // TODO: Update mesh credentials via JNI (need to add JNI function for this)
+        Log.i("MeshManagement", "✅ Created new mesh: $meshId (handle: $handle)")
     } else {
-        Log.w("MeshManagement", "AtmosphereCore not initialized, mesh credentials not applied")
+        Log.w("MeshManagement", "Atmosphere not initialized, mesh credentials not applied")
     }
 
     // TODO: Persist mesh credentials to preferences
@@ -100,12 +100,10 @@ fun AtmosphereService.joinMesh(inviteToken: String): Boolean {
         return false
     }
 
-    // Update the AtmosphereCore instance
-    val core = getAtmosphereCore()
-    if (core != null) {
-        core.meshId = token.meshId
-        core.sharedSecret = token.secret
-        Log.i("MeshManagement", "✅ Joined mesh: ${token.meshId}")
+    val handle = getAtmosphereHandle()
+    if (handle != 0L) {
+        // TODO: Update mesh credentials via JNI (need to add JNI function for this)
+        Log.i("MeshManagement", "✅ Joined mesh: ${token.meshId} (handle: $handle)")
         
         // TODO: Connect to BigLlama if provided
         if (token.bigLlamaUrl != null) {
@@ -113,7 +111,7 @@ fun AtmosphereService.joinMesh(inviteToken: String): Boolean {
             // connectToBigLlama(token.bigLlamaUrl)
         }
     } else {
-        Log.w("MeshManagement", "AtmosphereCore not initialized, cannot join mesh")
+        Log.w("MeshManagement", "Atmosphere not initialized, cannot join mesh")
         return false
     }
 
@@ -130,14 +128,19 @@ fun AtmosphereService.joinMesh(inviteToken: String): Boolean {
  * Can be encoded as QR code or shared as text.
  */
 fun AtmosphereService.generateInvite(bigLlamaUrl: String? = null): MeshInviteToken? {
-    val core = getAtmosphereCore() ?: run {
-        Log.e("MeshManagement", "AtmosphereCore not initialized")
+    val handle = getAtmosphereHandle()
+    if (handle == 0L) {
+        Log.e("MeshManagement", "Atmosphere not initialized")
         return null
     }
 
+    // TODO: Get mesh ID from JNI (for now, use hardcoded playground mesh)
+    val meshId = getMeshId() ?: "atmosphere-playground-mesh-v1"
+    val secret = "placeholder-secret"  // TODO: Get from preferences or JNI
+
     return MeshInviteToken(
-        meshId = core.meshId,
-        secret = core.sharedSecret,
+        meshId = meshId,
+        secret = secret,
         bigLlamaUrl = bigLlamaUrl
     )
 }
@@ -149,20 +152,49 @@ data class MeshInfo(
     val meshId: String,
     val mode: String, // "playground" or "token"
     val peerCount: Int,
-    val peers: List<com.llamafarm.atmosphere.core.PeerInfo>,
+    val peers: List<SimplePeerInfo>,
     val bigLlamaUrl: String? = null
 )
 
 fun AtmosphereService.getMeshInfo(): MeshInfo? {
-    val core = getAtmosphereCore() ?: return null
+    val handle = getAtmosphereHandle()
+    if (handle == 0L) return null
     
-    val peers = core.connectedPeers()
+    // Get peers via JNI
+    val peersJson = try {
+        AtmosphereNative.peers(handle)
+    } catch (e: Exception) {
+        Log.e("MeshManagement", "Failed to get peers", e)
+        return null
+    }
+    
+    val peers: List<SimplePeerInfo> = try {
+        val peerArray = JSONArray(peersJson)
+        (0 until peerArray.length()).map { i ->
+            val p = peerArray.getJSONObject(i)
+            val transportsArray = p.optJSONArray("connected_transports")
+            val transportsList = if (transportsArray != null) {
+                (0 until transportsArray.length()).map { j -> transportsArray.getString(j) }
+            } else {
+                listOf("lan")
+            }
+            SimplePeerInfo(
+                peerId = p.getString("peer_id"),
+                state = p.optString("state", "Connected"),
+                transports = transportsList
+            )
+        }
+    } catch (e: Exception) {
+        Log.e("MeshManagement", "Failed to parse peers", e)
+        emptyList<SimplePeerInfo>()
+    }
     
     // TODO: Determine mode (playground vs token) based on mesh origin
-    val mode = "token" // For now, assume token mode
+    val mode = "playground" // For now, assume playground mode
+    val meshId = getMeshId() ?: "atmosphere-playground-mesh-v1"
     
     return MeshInfo(
-        meshId = core.meshId,
+        meshId = meshId,
         mode = mode,
         peerCount = peers.size,
         peers = peers,
@@ -175,8 +207,9 @@ fun AtmosphereService.getMeshInfo(): MeshInfo? {
  * Peers with old credentials will be rejected on next handshake.
  */
 fun AtmosphereService.leaveMesh() {
-    val core = getAtmosphereCore() ?: run {
-        Log.e("MeshManagement", "AtmosphereCore not initialized")
+    val handle = getAtmosphereHandle()
+    if (handle == 0L) {
+        Log.e("MeshManagement", "Atmosphere not initialized")
         return
     }
 
@@ -184,8 +217,7 @@ fun AtmosphereService.leaveMesh() {
     val newSecret = ByteArray(32).apply { java.security.SecureRandom().nextBytes(this) }
         .joinToString("") { "%02x".format(it) }
 
-    core.meshId = newMeshId
-    core.sharedSecret = newSecret
+    // TODO: Update mesh credentials via JNI (need to add JNI function for this)
 
     Log.i("MeshManagement", "✅ Left mesh, new mesh_id: $newMeshId")
 

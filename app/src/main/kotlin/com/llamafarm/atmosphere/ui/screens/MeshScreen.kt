@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 import com.llamafarm.atmosphere.ui.theme.StatusOffline
 import com.llamafarm.atmosphere.ui.theme.StatusOnline
 import com.llamafarm.atmosphere.ui.theme.StatusConnecting
+import com.llamafarm.atmosphere.apps.AppRegistry
 import com.llamafarm.atmosphere.viewmodel.AtmosphereViewModel
 import java.text.SimpleDateFormat
 import java.util.*
@@ -44,9 +45,9 @@ fun MeshScreen(
     var isScanning by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     
-    // Daemon peers
-    val daemonPeers by viewModel.daemonPeers.collectAsState()
-    val daemonConnected by viewModel.daemonConnected.collectAsState()
+    // Mesh peers
+    val meshPeers by viewModel.meshPeers.collectAsState()
+    val meshConnected by viewModel.meshConnected.collectAsState()
     
     // NEW: Saved meshes
     val savedMeshes by viewModel.savedMeshes.collectAsState()
@@ -54,6 +55,14 @@ fun MeshScreen(
     val crdtConnected by viewModel.crdtConnected.collectAsState()
     val transportStatuses by viewModel.transportStatuses.collectAsState()
     val activeTransportType by viewModel.activeTransportType.collectAsState()
+    
+    // Capabilities from mesh
+    val meshCapabilities by viewModel.meshCapabilities.collectAsState()
+    
+    // Mesh apps from AppRegistry
+    val appRegistry = remember { AppRegistry.getInstance() }
+    val appCapabilities by appRegistry.appCapabilities.collectAsState()
+    val appGroups = remember(appCapabilities) { appCapabilities.groupBy { it.appName } }
     
     // Combine native and CRDT peers for display
     val allPeers = remember(nativePeers, relayPeers) {
@@ -236,17 +245,17 @@ fun MeshScreen(
             }
         }
 
-        // Daemon CRDT Peers (if connected)
-        if (daemonConnected && daemonPeers.isNotEmpty()) {
+        // Mesh CRDT Peers (if connected)
+        if (meshConnected && meshPeers.isNotEmpty()) {
             item {
                 Text(
-                    text = "CRDT Peers (${daemonPeers.size})",
+                    text = "CRDT Peers (${meshPeers.size})",
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.tertiary
                 )
             }
             
-            items(daemonPeers, key = { it.nodeId }) { peer ->
+            items(meshPeers, key = { it.nodeId }) { peer ->
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
@@ -360,6 +369,122 @@ fun MeshScreen(
             
             items(allPeers, key = { it.nodeId }) { peer ->
                 PeerCard(peer = peer)
+            }
+        }
+
+        // ── Capabilities Section ──
+        if (isConnectedToMesh) {
+            item {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Capabilities",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+
+            // Show mesh CRDT capabilities
+            if (meshConnected) {
+                if (meshCapabilities.isNotEmpty()) {
+                    items(meshCapabilities, key = { "${it.nodeId}-${it.label}" }) { cap ->
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = cap.label,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Text(
+                                        text = "${cap.nodeName} (${cap.nodeId.take(8)}…)",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    item {
+                        Text(
+                            text = "No capabilities discovered yet",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+                    }
+                }
+            } else {
+                item {
+                    Text(
+                        text = "Mesh not active — capabilities unavailable",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                }
+            }
+        }
+
+        // ── Mesh Apps Section ──
+        if (isConnectedToMesh) {
+            if (appGroups.isNotEmpty()) {
+                item {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "Mesh Apps (${appGroups.size})",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                appGroups.forEach { (appName, caps) ->
+                    item(key = "app-$appName") {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f)
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.Widgets,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = appName.replaceFirstChar { it.uppercase() },
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = "${caps.size} capabilities • ${caps.firstOrNull()?.nodeName ?: ""}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

@@ -18,13 +18,16 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.navigation.NavController
 import com.llamafarm.atmosphere.BuildConfig
+import com.llamafarm.atmosphere.Screen
 import com.llamafarm.atmosphere.data.AtmospherePreferences
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
+    navController: NavController? = null,
     onNavigateToTransportSettings: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -174,6 +177,54 @@ fun SettingsScreen(
             }
         }
 
+        // Tools & Testing Section
+        item {
+            Text(
+                text = "Tools & Testing",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(vertical = 8.dp)
+            )
+        }
+
+        item {
+            SettingsCard {
+                SettingsItem(
+                    title = "Test Console",
+                    subtitle = "Send test messages and debug mesh",
+                    icon = Icons.Default.Send,
+                    onClick = { navController?.navigate(Screen.Test.route) }
+                )
+                
+                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                
+                SettingsItem(
+                    title = "RAG",
+                    subtitle = "Retrieval-Augmented Generation testing",
+                    icon = Icons.Default.Search,
+                    onClick = { navController?.navigate(Screen.RAG.route) }
+                )
+                
+                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                
+                SettingsItem(
+                    title = "Vision",
+                    subtitle = "Camera and vision model testing",
+                    icon = Icons.Default.CameraAlt,
+                    onClick = { navController?.navigate(Screen.VisionTest.route) }
+                )
+                
+                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+                
+                SettingsItem(
+                    title = "Connected Apps",
+                    subtitle = "Manage apps connected to Atmosphere",
+                    icon = Icons.Default.Apps,
+                    onClick = { navController?.navigate(Screen.ConnectedApps.route) }
+                )
+            }
+        }
+
         // Network Section
         item {
             Text(
@@ -195,10 +246,10 @@ fun SettingsScreen(
             }
         }
 
-        // Daemon Section
+        // Mesh Node Section
         item {
             Text(
-                text = "Daemon (atmosphere-core)",
+                text = "Mesh Node",
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(vertical = 8.dp)
@@ -208,8 +259,8 @@ fun SettingsScreen(
         item {
             SettingsCard {
                 SettingsItem(
-                    title = "Daemon URL",
-                    subtitle = "http://127.0.0.1:11462 (via adb reverse)",
+                    title = "Mesh Status",
+                    subtitle = "Peers discovered automatically over WiFi",
                     icon = Icons.Default.Link,
                     onClick = { /* Future: allow URL editing */ }
                 )

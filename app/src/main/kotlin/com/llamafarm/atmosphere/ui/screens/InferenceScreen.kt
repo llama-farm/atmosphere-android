@@ -28,10 +28,9 @@ fun InferenceScreen(
     onMeshInference: ((String, (String?, String?) -> Unit) -> Unit)? = null,
     atmosphereViewModel: com.llamafarm.atmosphere.viewmodel.AtmosphereViewModel? = null
 ) {
-    // Daemon state
-    val daemonConnected by atmosphereViewModel?.daemonConnected?.collectAsState() 
+    // Mesh state - always use mesh routing when connected
+    val meshConnected by atmosphereViewModel?.meshConnected?.collectAsState() 
         ?: remember { mutableStateOf(false) }
-    var useDaemon by remember { mutableStateOf(false) }
     val uiState by viewModel.uiState.collectAsState()
     val canChat = uiState.isModelLoaded || isMeshConnected
     var showModelPicker by remember { mutableStateOf(false) }
@@ -84,18 +83,14 @@ fun InferenceScreen(
                 onStopService = { viewModel.stopService() }
             )
             
-            // Daemon toggle (if daemon connected)
-            if (daemonConnected) {
+            // Routing info (mesh is always used when available)
+            if (meshConnected) {
                 Card(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                     colors = CardDefaults.cardColors(
-                        containerColor = if (useDaemon) {
-                            MaterialTheme.colorScheme.tertiaryContainer
-                        } else {
-                            MaterialTheme.colorScheme.surfaceVariant
-                        }
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f)
                     )
                 ) {
                     Row(
@@ -107,27 +102,33 @@ fun InferenceScreen(
                         Icon(
                             Icons.Default.Memory,
                             contentDescription = null,
-                            tint = if (useDaemon) {
-                                MaterialTheme.colorScheme.onTertiaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
+                            tint = MaterialTheme.colorScheme.tertiary
                         )
                         Spacer(Modifier.width(12.dp))
-                        Text(
-                            text = "Route via Daemon",
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.weight(1f),
-                            color = if (useDaemon) {
-                                MaterialTheme.colorScheme.onTertiaryContainer
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                        )
-                        Switch(
-                            checked = useDaemon,
-                            onCheckedChange = { useDaemon = it }
-                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Mesh routing active",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "Requests are routed through the mesh",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Surface(
+                            shape = MaterialTheme.shapes.small,
+                            color = MaterialTheme.colorScheme.tertiary
+                        ) {
+                            Text(
+                                text = "✓",
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onTertiary
+                            )
+                        }
                     }
                 }
             }
@@ -225,15 +226,15 @@ fun InferenceScreen(
                             chatInput = ""
                             chatMessages = chatMessages + ("user" to userMessage)
                             
-                            if (useDaemon && daemonConnected && atmosphereViewModel != null) {
-                                // Route via CRDT mesh → Mac daemon → LlamaFarm
-                                chatMessages = chatMessages + ("assistant" to "🔧 Routing via CRDT mesh...")
+                            // Always use mesh routing when connected
+                            if (meshConnected && atmosphereViewModel != null) {
+                                // Route via mesh for LLM inference
+                                chatMessages = chatMessages + ("assistant" to "🔧 Routing via mesh...")
                                 scope.launch {
                                     try {
                                         val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                                             val service = atmosphereViewModel?.serviceConnector?.getService()
-                                            val crdtCore = service?.getAtmosphereCore()
-                                            if (crdtCore != null) {
+                                            if (service != null && service.isNativeRunning()) {
                                                 // Route via SemanticRouter to find best project
                                                 val router = com.llamafarm.atmosphere.router.SemanticRouter.getInstance(context)
                                                 val routeDecision = router.route(userMessage)
@@ -248,27 +249,37 @@ fun InferenceScreen(
                                                         put("content", userMessage)
                                                     })
                                                 }.toString()
-                                                crdtCore.insert("_requests", mapOf<String, Any>(
-                                                    "_id" to requestId,
-                                                    "request_id" to requestId,
-                                                    "prompt" to userMessage,
-                                                    "messages" to messagesJson,
-                                                    "model" to "auto",
-                                                    "project_path" to projectPath,
-                                                    "status" to "pending",
-                                                    "timestamp" to System.currentTimeMillis(),
-                                                    "source" to "android"
-                                                ))
+                                                
+                                                // Insert via JNI
+                                                val handle = service.getAtmosphereHandle()
+                                                val docJson = org.json.JSONObject().apply {
+                                                    put("_id", requestId)
+                                                    put("request_id", requestId)
+                                                    put("prompt", userMessage)
+                                                    put("messages", messagesJson)
+                                                    put("model", "auto")
+                                                    put("project_path", projectPath)
+                                                    put("status", "pending")
+                                                    put("timestamp", System.currentTimeMillis())
+                                                    put("source", "android")
+                                                }.toString()
+                                                
+                                                com.llamafarm.atmosphere.core.AtmosphereNative.insert(
+                                                    handle, "_requests", requestId, docJson
+                                                )
                                                 android.util.Log.i("InferenceScreen", "📤 CRDT request inserted: $requestId")
+                                                
                                                 // Poll _responses for up to 30s
                                                 var responseContent: String? = null
                                                 val deadline = System.currentTimeMillis() + 30_000
                                                 while (System.currentTimeMillis() < deadline && responseContent == null) {
                                                     Thread.sleep(500)
-                                                    val responses = crdtCore.query("_responses")
-                                                    for (doc in responses) {
-                                                        if (doc["request_id"] == requestId) {
-                                                            responseContent = doc["content"]?.toString()
+                                                    val responsesJson = com.llamafarm.atmosphere.core.AtmosphereNative.query(handle, "_responses")
+                                                    val responses = org.json.JSONArray(responsesJson)
+                                                    for (i in 0 until responses.length()) {
+                                                        val doc = responses.getJSONObject(i)
+                                                        if (doc.optString("request_id") == requestId) {
+                                                            responseContent = doc.optString("content")
                                                             android.util.Log.i("InferenceScreen", "📥 Got response for $requestId")
                                                             break
                                                         }
@@ -276,7 +287,7 @@ fun InferenceScreen(
                                                 }
                                                 responseContent ?: "❌ Timeout waiting for mesh response (30s)"
                                             } else {
-                                                "❌ CRDT mesh not available"
+                                                "❌ Mesh not available"
                                             }
                                         }
                                         chatMessages = chatMessages.dropLastWhile { it.first == "assistant" }

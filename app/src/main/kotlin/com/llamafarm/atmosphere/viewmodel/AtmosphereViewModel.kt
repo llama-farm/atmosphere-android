@@ -9,14 +9,15 @@ import com.llamafarm.atmosphere.bindings.AtmosphereNode
 import com.llamafarm.atmosphere.bindings.MeshPeer
 import com.llamafarm.atmosphere.service.ServiceManager
 import com.llamafarm.atmosphere.service.ServiceStatus
+import com.llamafarm.atmosphere.service.SimplePeerInfo
 import com.llamafarm.atmosphere.data.AtmospherePreferences
 import com.llamafarm.atmosphere.data.SavedMesh
 import com.llamafarm.atmosphere.data.SavedMeshRepository
-import com.llamafarm.atmosphere.data.DaemonRepository
-import com.llamafarm.atmosphere.data.DaemonPeer
-import com.llamafarm.atmosphere.data.DaemonCapability
+import com.llamafarm.atmosphere.data.MeshRepository
+import com.llamafarm.atmosphere.data.HttpMeshPeer
+import com.llamafarm.atmosphere.data.HttpMeshCapability
 import com.llamafarm.atmosphere.data.BigLlamaStatus
-import com.llamafarm.atmosphere.data.DaemonInfo
+import com.llamafarm.atmosphere.data.HttpMeshNodeInfo
 // RelayPeer import removed — CRDT mesh replaces relay
 import com.llamafarm.atmosphere.network.TransportStatus
 import com.llamafarm.atmosphere.router.SemanticRouter
@@ -27,6 +28,10 @@ import com.llamafarm.atmosphere.service.AtmosphereService
 // ConnectionState import removed — CRDT mesh replaces relay
 import com.llamafarm.atmosphere.network.MeshMessage
 import com.llamafarm.atmosphere.transport.NodeInfo
+import com.llamafarm.atmosphere.viewmodel.JniParser
+import com.llamafarm.atmosphere.viewmodel.JniHealth
+import com.llamafarm.atmosphere.viewmodel.JniPeer
+import com.llamafarm.atmosphere.viewmodel.JniCapability
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -73,8 +78,8 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
     val peers: StateFlow<List<MeshPeer>> = _peers.asStateFlow()
     
     // CRDT peer list (from CRDT mesh)
-    private val _relayPeers = MutableStateFlow<List<com.llamafarm.atmosphere.core.PeerInfo>>(emptyList())
-    val relayPeers: StateFlow<List<com.llamafarm.atmosphere.core.PeerInfo>> = _relayPeers.asStateFlow()
+    private val _relayPeers = MutableStateFlow<List<SimplePeerInfo>>(emptyList())
+    val relayPeers: StateFlow<List<SimplePeerInfo>> = _relayPeers.asStateFlow()
     
     // Combined peer count
     val peerCount: Int
@@ -138,31 +143,45 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
     val bleEnabled: StateFlow<Boolean> = _bleEnabled.asStateFlow()
     
     // ============================================================================
-    // Daemon Integration - atmosphere-core daemon (localhost:11462)
+    // Mesh Integration - atmosphere-core mesh (localhost:11462)
     // ============================================================================
     
-    // Daemon repository for HTTP communication
-    private val daemonRepository = DaemonRepository()
+    // Mesh repository for HTTP communication
+    private val meshHttpClient = MeshRepository()
     
-    // Daemon connection state
-    private val _daemonConnected = MutableStateFlow(false)
-    val daemonConnected: StateFlow<Boolean> = _daemonConnected.asStateFlow()
+    // Mesh connection state
+    private val _meshConnected = MutableStateFlow(false)
+    val meshConnected: StateFlow<Boolean> = _meshConnected.asStateFlow()
     
-    // Daemon peers (from CRDT)
-    private val _daemonPeers = MutableStateFlow<List<DaemonPeer>>(emptyList())
-    val daemonPeers: StateFlow<List<DaemonPeer>> = _daemonPeers.asStateFlow()
+    // Mesh peers (from CRDT)
+    private val _meshPeers = MutableStateFlow<List<HttpMeshPeer>>(emptyList())
+    val meshPeers: StateFlow<List<HttpMeshPeer>> = _meshPeers.asStateFlow()
     
-    // Daemon capabilities (from CRDT)
-    private val _daemonCapabilities = MutableStateFlow<List<DaemonCapability>>(emptyList())
-    val daemonCapabilities: StateFlow<List<DaemonCapability>> = _daemonCapabilities.asStateFlow()
+    // Mesh capabilities (from CRDT)
+    private val _meshCapabilities = MutableStateFlow<List<HttpMeshCapability>>(emptyList())
+    val meshCapabilities: StateFlow<List<HttpMeshCapability>> = _meshCapabilities.asStateFlow()
     
-    // BigLlama status from daemon
+    // BigLlama status from mesh
     private val _bigLlamaStatus = MutableStateFlow<BigLlamaStatus?>(null)
     val bigLlamaStatus: StateFlow<BigLlamaStatus?> = _bigLlamaStatus.asStateFlow()
     
-    // Daemon info
-    private val _daemonInfo = MutableStateFlow<DaemonInfo?>(null)
-    val daemonInfo: StateFlow<DaemonInfo?> = _daemonInfo.asStateFlow()
+    // Mesh node info
+    private val _meshInfo = MutableStateFlow<HttpMeshNodeInfo?>(null)
+    val meshInfo: StateFlow<HttpMeshNodeInfo?> = _meshInfo.asStateFlow()
+    
+    // ============================================================================
+    // JNI MESH STATE - Direct from Rust core via AtmosphereNative (NEW!)
+    // This is the PRIMARY source of truth for mesh state.
+    // ============================================================================
+    
+    private val _jniHealth = MutableStateFlow<JniHealth?>(null)
+    val jniHealth: StateFlow<JniHealth?> = _jniHealth.asStateFlow()
+    
+    private val _jniPeers = MutableStateFlow<List<JniPeer>>(emptyList())
+    val jniPeers: StateFlow<List<JniPeer>> = _jniPeers.asStateFlow()
+    
+    private val _jniCapabilities = MutableStateFlow<List<JniCapability>>(emptyList())
+    val jniCapabilities: StateFlow<List<JniCapability>> = _jniCapabilities.asStateFlow()
     
     // Semantic router for intent-based routing
     val semanticRouter = SemanticRouter.getInstance(application)
@@ -239,8 +258,11 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
         // Observe mesh events from service
         observeServiceMeshEvents()
         
-        // Start daemon polling
-        startDaemonPolling()
+        // Start mesh polling
+        startMeshPolling()
+        
+        // Start JNI polling - PRIMARY source of truth for mesh state
+        startJniPolling()
         
         // Poll gossip stats periodically (get initial stats immediately!)
         viewModelScope.launch {
@@ -357,12 +379,12 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
     }
     
     /**
-     * Start polling the atmosphere-core daemon for state updates.
-     * Collects daemon state flows and updates ViewModel state.
+     * Start polling the atmosphere-core mesh for state updates.
+     * Collects mesh state flows and updates ViewModel state.
      */
     /**
      * Observe CRDT mesh state directly from AtmosphereService's in-process core.
-     * This supplements the HTTP-based daemon polling with real-time local state.
+     * This supplements the HTTP-based mesh polling with real-time local state.
      */
     private fun observeCrdtMeshState() {
         viewModelScope.launch {
@@ -374,31 +396,44 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
                 delay(3000)
                 try {
                     val service = serviceConnector?.getService() ?: continue
-                    val core = service.getAtmosphereCore() ?: continue
+                    val handle = service.getAtmosphereHandle()
+                    if (handle == 0L) continue
                     
-                    // Update daemon connected (local core is always "connected")
-                    _daemonConnected.value = true
+                    // Update mesh connected (local core is always "connected")
+                    _meshConnected.value = true
                     
-                    // Update peers from CRDT mesh
-                    val crdtPeers = core.connectedPeers()
-                    _daemonPeers.value = crdtPeers.map { p ->
-                        DaemonPeer(
-                            nodeId = p.peerId,
-                            nodeName = p.peerId.take(8),
-                            capabilities = emptyList(),
-                            lastSeen = p.lastSeen,
-                            metadata = mapOf("transport" to p.transport)
+                    // Update peers from CRDT mesh via JNI
+                    val peersJson = com.llamafarm.atmosphere.core.AtmosphereNative.peers(handle)
+                    val peerArray = org.json.JSONArray(peersJson)
+                    val crdtPeers = (0 until peerArray.length()).map { i ->
+                        val p = peerArray.getJSONObject(i)
+                        SimplePeerInfo(
+                            peerId = p.getString("peer_id"),
+                            state = p.optString("state", "connected"),
+                            transports = listOf(p.optString("transport", "lan"))
                         )
                     }
                     
-                    // Update daemon info from local core
-                    _daemonInfo.value = DaemonInfo(
-                        nodeId = core.peerId,
-                        nodeName = "BigLlama-Android",
+                    _meshPeers.value = crdtPeers.map { p ->
+                        HttpMeshPeer(
+                            nodeId = p.peerId,
+                            nodeName = p.peerId.take(8),
+                            capabilities = emptyList(),
+                            lastSeen = System.currentTimeMillis(),
+                            metadata = mapOf("transport" to (p.transports.firstOrNull()?.toString() ?: "unknown"))
+                        )
+                    }
+                    
+                    // Update mesh info from local core
+                    val healthJson = com.llamafarm.atmosphere.core.AtmosphereNative.health(handle)
+                    val health = org.json.JSONObject(healthJson)
+                    _meshInfo.value = HttpMeshNodeInfo(
+                        nodeId = health.optString("peer_id", "unknown"),
+                        nodeName = "Atmosphere-Android",
                         version = "1.0",
                         uptime = 0,
                         peerCount = crdtPeers.size,
-                        capabilityCount = _daemonCapabilities.value.size
+                        capabilityCount = _meshCapabilities.value.size
                     )
                 } catch (e: Exception) {
                     Log.d(TAG, "CRDT state poll error: ${e.message}")
@@ -407,44 +442,104 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
     
-    private fun startDaemonPolling() {
-        Log.i(TAG, "🔧 Starting daemon polling")
-        daemonRepository.startPolling(intervalMs = 5000)
+    /**
+     * Start JNI polling - PRIMARY source of truth for all mesh state.
+     * Polls AtmosphereNative.* methods every 3 seconds.
+     */
+    private fun startJniPolling() {
+        Log.i(TAG, "🎯 Starting JNI polling (PRIMARY mesh state)")
+        viewModelScope.launch {
+            // Wait for service to bind first
+            serviceConnector?.bound?.first { it }
+            
+            while (true) {
+                try {
+                    val service = serviceConnector?.getService()
+                    val handle = service?.getAtmosphereHandle()
+                    
+                    if (handle != null && handle != 0L) {
+                        // Poll health
+                        val healthJson = com.llamafarm.atmosphere.core.AtmosphereNative.health(handle)
+                        val health = JniParser.parseHealth(healthJson)
+                        if (health != null) {
+                            _jniHealth.value = health
+                            
+                            // Update nodeState from JNI health
+                            _nodeState.value = _nodeState.value.copy(
+                                isRunning = health.status == "running",
+                                nodeId = health.peerId,
+                                connectedPeers = health.peerCount
+                            )
+                        }
+                        
+                        // Poll peers
+                        val peersJson = com.llamafarm.atmosphere.core.AtmosphereNative.peers(handle)
+                        val peers = JniParser.parsePeers(peersJson)
+                        // Filter out self
+                        val filteredPeers = health?.let { h ->
+                            peers.filter { it.peerId != h.peerId }
+                        } ?: peers
+                        _jniPeers.value = filteredPeers
+                        
+                        // Poll capabilities
+                        val capsJson = com.llamafarm.atmosphere.core.AtmosphereNative.capabilities(handle)
+                        val caps = JniParser.parseCapabilities(capsJson)
+                        _jniCapabilities.value = caps
+                        
+                        Log.d(TAG, "🎯 JNI poll: ${filteredPeers.size} peers, ${caps.size} capabilities")
+                    } else {
+                        // Core not initialized yet
+                        _jniHealth.value = null
+                        _jniPeers.value = emptyList()
+                        _jniCapabilities.value = emptyList()
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "JNI polling error", e)
+                }
+                
+                delay(3000)
+            }
+        }
+    }
+    
+    private fun startMeshPolling() {
+        Log.i(TAG, "🔧 Starting mesh polling")
+        meshHttpClient.startPolling(intervalMs = 5000)
         
         // Also observe CRDT mesh directly from service
         observeCrdtMeshState()
         
-        // Observe daemon state flows (HTTP-based, kept as fallback)
+        // Observe mesh state flows (HTTP-based, kept as fallback)
         viewModelScope.launch {
-            daemonRepository.isConnected.collect { connected ->
-                // Only update if CRDT core isn't providing state
-                if (serviceConnector?.getService()?.getAtmosphereCore() == null) {
-                    _daemonConnected.value = connected
+            meshHttpClient.isConnected.collect { connected ->
+                // Only update if Atmosphere core isn't running
+                if (serviceConnector?.getService()?.getAtmosphereHandle() == 0L) {
+                    _meshConnected.value = connected
                 }
                 if (connected) {
-                    Log.d(TAG, "✅ Daemon connected")
+                    Log.d(TAG, "✅ Mesh active")
                 } else {
-                    Log.d(TAG, "❌ Daemon disconnected")
+                    Log.d(TAG, "❌ Mesh inactive")
                 }
             }
         }
         
         viewModelScope.launch {
-            daemonRepository.peers.collect { peers ->
-                _daemonPeers.value = peers
-                Log.d(TAG, "Daemon peers updated: ${peers.size}")
+            meshHttpClient.peers.collect { peers ->
+                _meshPeers.value = peers
+                Log.d(TAG, "Mesh peers updated: ${peers.size}")
             }
         }
         
         viewModelScope.launch {
-            daemonRepository.capabilities.collect { caps ->
-                _daemonCapabilities.value = caps
-                Log.d(TAG, "Daemon capabilities updated: ${caps.size}")
+            meshHttpClient.capabilities.collect { caps ->
+                _meshCapabilities.value = caps
+                Log.d(TAG, "Mesh capabilities updated: ${caps.size}")
             }
         }
         
         viewModelScope.launch {
-            daemonRepository.bigLlamaStatus.collect { status ->
+            meshHttpClient.bigLlamaStatus.collect { status ->
                 _bigLlamaStatus.value = status
                 status?.let {
                     Log.d(TAG, "BigLlama status: ${it.mode}")
@@ -453,8 +548,8 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
         }
         
         viewModelScope.launch {
-            daemonRepository.daemonInfo.collect { info ->
-                _daemonInfo.value = info
+            meshHttpClient.meshInfo.collect { info ->
+                _meshInfo.value = info
             }
         }
     }
@@ -1187,8 +1282,8 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
      */
     override fun onCleared() {
         super.onCleared()
-        Log.i(TAG, "ViewModel clearing - stopping daemon polling")
-        daemonRepository.close()
+        Log.i(TAG, "ViewModel clearing - stopping mesh polling")
+        meshHttpClient.close()
         stopBle()
     }
 }

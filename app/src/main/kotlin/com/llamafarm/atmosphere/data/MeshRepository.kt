@@ -13,12 +13,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
-private const val TAG = "DaemonRepository"
+private const val TAG = "MeshRepository"
 
 /**
- * Data classes for daemon responses
+ * Data classes for mesh responses
  */
-data class DaemonPeer(
+data class HttpMeshPeer(
     val nodeId: String,
     val nodeName: String,
     val capabilities: List<String>,
@@ -26,7 +26,7 @@ data class DaemonPeer(
     val metadata: Map<String, String> = emptyMap()
 )
 
-data class DaemonCapability(
+data class HttpMeshCapability(
     val id: String,
     val label: String,
     val nodeId: String,
@@ -42,7 +42,7 @@ data class BigLlamaStatus(
     val lastCheck: Long
 )
 
-data class DaemonInfo(
+data class HttpMeshNodeInfo(
     val nodeId: String,
     val nodeName: String,
     val version: String,
@@ -52,11 +52,11 @@ data class DaemonInfo(
 )
 
 /**
- * Repository for communicating with the atmosphere-core daemon via HTTP proxy.
- * The daemon runs on Mac and is accessible via adb reverse (localhost:11462).
+ * Repository for communicating with the atmosphere-core mesh via HTTP proxy.
+ * The mesh runs on Mac and is accessible via adb reverse (localhost:11462).
  */
-class DaemonRepository(
-    private val baseUrl: String = "http://127.0.0.1:11462"
+class MeshRepository(
+    private val baseUrl: String = "http://localhost:11462"
 ) {
     private val client = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
@@ -70,22 +70,22 @@ class DaemonRepository(
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
     
-    private val _peers = MutableStateFlow<List<DaemonPeer>>(emptyList())
-    val peers: StateFlow<List<DaemonPeer>> = _peers.asStateFlow()
+    private val _peers = MutableStateFlow<List<HttpMeshPeer>>(emptyList())
+    val peers: StateFlow<List<HttpMeshPeer>> = _peers.asStateFlow()
     
-    private val _capabilities = MutableStateFlow<List<DaemonCapability>>(emptyList())
-    val capabilities: StateFlow<List<DaemonCapability>> = _capabilities.asStateFlow()
+    private val _capabilities = MutableStateFlow<List<HttpMeshCapability>>(emptyList())
+    val capabilities: StateFlow<List<HttpMeshCapability>> = _capabilities.asStateFlow()
     
     private val _bigLlamaStatus = MutableStateFlow<BigLlamaStatus?>(null)
     val bigLlamaStatus: StateFlow<BigLlamaStatus?> = _bigLlamaStatus.asStateFlow()
     
-    private val _daemonInfo = MutableStateFlow<DaemonInfo?>(null)
-    val daemonInfo: StateFlow<DaemonInfo?> = _daemonInfo.asStateFlow()
+    private val _meshInfo = MutableStateFlow<HttpMeshNodeInfo?>(null)
+    val meshInfo: StateFlow<HttpMeshNodeInfo?> = _meshInfo.asStateFlow()
     
     private var pollingJob: Job? = null
     
     /**
-     * Start polling the daemon every [intervalMs] milliseconds.
+     * Start polling the mesh every [intervalMs] milliseconds.
      */
     fun startPolling(intervalMs: Long = 5000) {
         if (pollingJob?.isActive == true) {
@@ -93,7 +93,7 @@ class DaemonRepository(
             return
         }
         
-        Log.i(TAG, "Starting daemon polling (interval=${intervalMs}ms)")
+        Log.i(TAG, "Starting mesh polling (interval=${intervalMs}ms)")
         pollingJob = scope.launch {
             while (isActive) {
                 try {
@@ -111,14 +111,14 @@ class DaemonRepository(
      * Stop polling.
      */
     fun stopPolling() {
-        Log.i(TAG, "Stopping daemon polling")
+        Log.i(TAG, "Stopping mesh polling")
         pollingJob?.cancel()
         pollingJob = null
         _isConnected.value = false
     }
     
     /**
-     * Fetch all daemon state in parallel.
+     * Fetch all mesh state in parallel.
      */
     private suspend fun fetchAll() {
         coroutineScope {
@@ -139,7 +139,7 @@ class DaemonRepository(
     }
     
     /**
-     * Check daemon health.
+     * Check mesh health.
      */
     suspend fun getHealth(): Boolean = withContext(Dispatchers.IO) {
         try {
@@ -157,7 +157,7 @@ class DaemonRepository(
                 val nodeName = json.optString("node_name", "")
                 val uptime = json.optLong("uptime", 0)
                 
-                _daemonInfo.value = DaemonInfo(
+                _meshInfo.value = HttpMeshNodeInfo(
                     nodeId = nodeId,
                     nodeName = nodeName,
                     version = json.optString("version", "unknown"),
@@ -166,9 +166,9 @@ class DaemonRepository(
                     capabilityCount = json.optInt("capability_count", 0)
                 )
                 
-                Log.d(TAG, "✅ Daemon health OK: $nodeName ($nodeId)")
+                Log.d(TAG, "✅ Mesh health OK: $nodeName ($nodeId)")
             } else {
-                Log.w(TAG, "❌ Daemon health check failed: ${response.code}")
+                Log.w(TAG, "❌ Mesh health check failed: ${response.code}")
             }
             
             response.close()
@@ -180,9 +180,9 @@ class DaemonRepository(
     }
     
     /**
-     * Get peers from daemon.
+     * Get peers from mesh.
      */
-    suspend fun getPeers(): List<DaemonPeer> = withContext(Dispatchers.IO) {
+    suspend fun getPeers(): List<HttpMeshPeer> = withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder()
                 .url("$baseUrl/api/peers")
@@ -206,7 +206,7 @@ class DaemonRepository(
                     capsArray.getString(j)
                 }
                 
-                DaemonPeer(
+                HttpMeshPeer(
                     nodeId = peer.getString("node_id"),
                     nodeName = peer.getString("node_name"),
                     capabilities = capabilities,
@@ -215,7 +215,7 @@ class DaemonRepository(
             }
             
             response.close()
-            Log.d(TAG, "Fetched ${peers.size} peers from daemon")
+            Log.d(TAG, "Fetched ${peers.size} peers from mesh")
             peers
         } catch (e: Exception) {
             Log.e(TAG, "Get peers error: ${e.message}")
@@ -224,9 +224,9 @@ class DaemonRepository(
     }
     
     /**
-     * Get capabilities from daemon.
+     * Get capabilities from mesh.
      */
-    suspend fun getCapabilities(): List<DaemonCapability> = withContext(Dispatchers.IO) {
+    suspend fun getCapabilities(): List<HttpMeshCapability> = withContext(Dispatchers.IO) {
         try {
             val request = Request.Builder()
                 .url("$baseUrl/api/capabilities")
@@ -246,7 +246,7 @@ class DaemonRepository(
             val capabilities = (0 until capsArray.length()).map { i ->
                 val cap = capsArray.getJSONObject(i)
                 
-                DaemonCapability(
+                HttpMeshCapability(
                     id = cap.optString("_id", cap.optString("id", "")),
                     label = cap.optString("name", cap.optString("label", "")),
                     nodeId = cap.optString("peer_id", cap.optString("node_id", "")),
@@ -255,7 +255,7 @@ class DaemonRepository(
             }
             
             response.close()
-            Log.d(TAG, "Fetched ${capabilities.size} capabilities from daemon")
+            Log.d(TAG, "Fetched ${capabilities.size} capabilities from mesh")
             capabilities
         } catch (e: Exception) {
             Log.e(TAG, "Get capabilities error: ${e.message}")
@@ -264,7 +264,7 @@ class DaemonRepository(
     }
     
     /**
-     * Get BigLlama connection status from daemon.
+     * Get BigLlama connection status from mesh.
      */
     suspend fun getBigLlamaStatus(): BigLlamaStatus? = withContext(Dispatchers.IO) {
         try {
@@ -300,7 +300,7 @@ class DaemonRepository(
     }
     
     /**
-     * Send a chat request to daemon for streaming inference.
+     * Send a chat request to mesh for streaming inference.
      * Returns request ID for tracking the streaming response.
      */
     suspend fun sendChatRequest(

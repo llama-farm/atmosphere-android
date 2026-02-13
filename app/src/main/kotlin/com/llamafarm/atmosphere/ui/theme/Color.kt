@@ -2,65 +2,54 @@ package com.llamafarm.atmosphere.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Atmosphere brand colors
-val AtmospherePrimary = Color(0xFF6750A4)
-val AtmosphereSecondary = Color(0xFF625B71)
-val AtmosphereTertiary = Color(0xFF7D5260)
+// ============================================================================
+// Atmosphere Mesh Debugger Color Palette
+// Matches the web dashboard at dashboard.html
+// ============================================================================
 
-// Light theme colors
-val PrimaryLight = Color(0xFF6750A4)
-val OnPrimaryLight = Color(0xFFFFFFFF)
-val PrimaryContainerLight = Color(0xFFEADDFF)
-val OnPrimaryContainerLight = Color(0xFF21005D)
-val SecondaryLight = Color(0xFF625B71)
-val OnSecondaryLight = Color(0xFFFFFFFF)
-val SecondaryContainerLight = Color(0xFFE8DEF8)
-val OnSecondaryContainerLight = Color(0xFF1D192B)
-val TertiaryLight = Color(0xFF7D5260)
-val OnTertiaryLight = Color(0xFFFFFFFF)
-val TertiaryContainerLight = Color(0xFFFFD8E4)
-val OnTertiaryContainerLight = Color(0xFF31111D)
-val ErrorLight = Color(0xFFB3261E)
-val OnErrorLight = Color(0xFFFFFFFF)
-val ErrorContainerLight = Color(0xFFF9DEDC)
-val OnErrorContainerLight = Color(0xFF410E0B)
-val BackgroundLight = Color(0xFFFFFBFE)
-val OnBackgroundLight = Color(0xFF1C1B1F)
-val SurfaceLight = Color(0xFFFFFBFE)
-val OnSurfaceLight = Color(0xFF1C1B1F)
-val SurfaceVariantLight = Color(0xFFE7E0EC)
-val OnSurfaceVariantLight = Color(0xFF49454F)
-val OutlineLight = Color(0xFF79747E)
-val OutlineVariantLight = Color(0xFFCAC4D0)
+// Core backgrounds
+val DashboardBackground = Color(0xFF0D1117)
+val CardBackground = Color(0xFF161B22)
+val CardBackgroundHover = Color(0xFF1C2128)
+val BorderColor = Color(0xFF30363D)
+val BorderSubtle = Color(0xFF21262D)
 
-// Dark theme colors
-val PrimaryDark = Color(0xFFD0BCFF)
-val OnPrimaryDark = Color(0xFF381E72)
-val PrimaryContainerDark = Color(0xFF4F378B)
-val OnPrimaryContainerDark = Color(0xFFEADDFF)
-val SecondaryDark = Color(0xFFCCC2DC)
-val OnSecondaryDark = Color(0xFF332D41)
-val SecondaryContainerDark = Color(0xFF4A4458)
-val OnSecondaryContainerDark = Color(0xFFE8DEF8)
-val TertiaryDark = Color(0xFFEFB8C8)
-val OnTertiaryDark = Color(0xFF492532)
-val TertiaryContainerDark = Color(0xFF633B48)
-val OnTertiaryContainerDark = Color(0xFFFFD8E4)
-val ErrorDark = Color(0xFFF2B8B5)
-val OnErrorDark = Color(0xFF601410)
-val ErrorContainerDark = Color(0xFF8C1D18)
-val OnErrorContainerDark = Color(0xFFF9DEDC)
-val BackgroundDark = Color(0xFF1C1B1F)
-val OnBackgroundDark = Color(0xFFE6E1E5)
-val SurfaceDark = Color(0xFF1C1B1F)
-val OnSurfaceDark = Color(0xFFE6E1E5)
-val SurfaceVariantDark = Color(0xFF49454F)
-val OnSurfaceVariantDark = Color(0xFFCAC4D0)
-val OutlineDark = Color(0xFF938F99)
-val OutlineVariantDark = Color(0xFF49454F)
+// Text
+val TextPrimary = Color(0xFFC9D1D9)
+val TextSecondary = Color(0xFF8B949E)
+val TextMuted = Color(0xFF6E7681)
+val TextWhite = Color(0xFFFFFFFF)
+
+// Accent / interactive
+val AccentBlue = Color(0xFF58A6FF)
+val AccentBlueDim = Color(0xFF1F6FEB)
+val AccentCyan = Color(0xFF56D4DD)
+val AccentOrange = Color(0xFFDB8B1E)
 
 // Status colors
-val StatusOnline = Color(0xFF4CAF50)
-val StatusOffline = Color(0xFF9E9E9E)
-val StatusConnecting = Color(0xFFFFC107)
-val StatusError = Color(0xFFF44336)
+val StatusGreen = Color(0xFF3FB950)
+val StatusGreenBg = Color(0x20238636)
+val StatusYellow = Color(0xFFD29922)
+val StatusYellowBg = Color(0x209E6A03)
+val StatusRed = Color(0xFFF85149)
+val StatusRedBg = Color(0x20DA3633)
+val StatusPurple = Color(0xFFBC8CFF)
+val StatusPurpleBg = Color(0x208957E5)
+val StatusGray = Color(0xFF8B949E)
+val StatusGrayBg = Color(0x206E7681)
+
+// Transport dot
+val TransportActive = Color(0xFF238636)
+val TransportOff = Color(0xFF6E7681)
+
+// Button
+val ButtonGreen = Color(0xFF238636)
+val ButtonGreenHover = Color(0xFF2EA043)
+val ButtonSecondary = Color(0xFF21262D)
+val ButtonSecondaryHover = Color(0xFF30363D)
+
+// Legacy status colors (kept for backward compat)
+val StatusOnline = StatusGreen
+val StatusOffline = StatusGray
+val StatusConnecting = StatusYellow
+val StatusError = StatusRed

@@ -196,17 +196,19 @@ class ServiceConnector(private val context: Context) {
     }
     
     /**
-     * Connect to a saved mesh.
+     * Connect to a saved mesh (mesh ID is now hardcoded in service).
      */
     fun connectToMesh(meshId: String) {
-        service?.connectToMesh(meshId)
+        // Mesh ID is hardcoded in Rust core for now
+        Log.d(TAG, "Mesh connection is managed by service start/stop")
     }
     
     /**
      * Disconnect from current mesh.
      */
     fun disconnectMesh() {
-        service?.disconnectMesh()
+        // Stop the service to disconnect
+        stopService()
     }
     
     /**
@@ -311,7 +313,7 @@ class ServiceConnector(private val context: Context) {
     /**
      * Get CRDT peers from service.
      */
-    fun getServiceCrdtPeers(): StateFlow<List<com.llamafarm.atmosphere.core.PeerInfo>>? {
+    fun getServiceCrdtPeers(): StateFlow<List<SimplePeerInfo>>? {
         return service?.crdtPeers
     }
 }
