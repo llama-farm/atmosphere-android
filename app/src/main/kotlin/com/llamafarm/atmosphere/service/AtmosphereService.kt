@@ -203,9 +203,6 @@ class AtmosphereService : Service() {
     // Local inference engine
     private var localInferenceEngine: LocalInferenceEngine? = null
     
-    // Sensor request handler for responding to mesh sensor requests
-    private var sensorRequestHandler: com.llamafarm.atmosphere.capabilities.SensorRequestHandler? = null
-    
     // Pending inference requests: requestId -> callback
     private val pendingRequests = ConcurrentHashMap<String, (String?, String?) -> Unit>()
     
@@ -939,8 +936,8 @@ class AtmosphereService : Service() {
             } else {
                 Log.w(TAG, "⚠️ Failed to initialize embedder")
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize embedder", e)
+        } catch (e: Throwable) {
+            Log.w(TAG, "⚠️ Embedder not available (JNI function missing from native library) - embedding routing disabled", e)
         }
     }
     
@@ -1123,108 +1120,6 @@ class AtmosphereService : Service() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start CRDT mesh", e)
-            // Start polling for sensor requests
-            startSensorRequestPolling()
-
-        }
-    }
-
-    // Sensor request handler
-    private var sensorRequestHandler: com.llamafarm.atmosphere.capabilities.SensorRequestHandler? = null
-    
-    /**
-     * Start polling _requests collection for sensor data requests.
-     * Responds to sensor requests via _responses collection.
-     */
-    private fun startSensorRequestPolling() {
-        sensorRequestHandler = com.llamafarm.atmosphere.capabilities.SensorRequestHandler(applicationContext)
-        
-        serviceScope.launch {
-            while (isActive && atmosphereHandle != 0L) {
-                delay(2000) // Poll every 2 seconds
-                
-                try {
-                    // Query _requests collection for unhandled sensor requests
-                    val requestsJson = AtmosphereNative.query(atmosphereHandle, "_requests")
-                    val requestsArray = org.json.JSONArray(requestsJson)
-                    
-                    for (i in 0 until requestsArray.length()) {
-                        val request = requestsArray.getJSONObject(i)
-                        val requestId = request.optString("request_id", "")
-                        val capabilityId = request.optString("capability_id", "")
-                        val status = request.optString("status", "pending")
-                        
-                        // Only handle sensor requests that are pending
-                        if (status == "pending" && capabilityId.startsWith("sensor:")) {
-                            handleSensorRequest(requestId, request)
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Error polling sensor requests: ${e.message}")
-                }
-            }
-        }
-    }
-    
-    /**
-     * Handle a single sensor request.
-     */
-    private fun handleSensorRequest(requestId: String, request: org.json.JSONObject) {
-        serviceScope.launch {
-            try {
-                val capabilityId = request.getString("capability_id")
-                
-                // Parse params
-                val params = mutableMapOf<String, Any>()
-                if (request.has("params")) {
-                    val paramsObj = request.getJSONObject("params")
-                    paramsObj.keys().forEach { key ->
-                        params[key] = paramsObj.get(key)
-                    }
-                }
-                
-                Log.i(TAG, "📡 Handling sensor request: $capabilityId (id=$requestId)")
-                
-                // Use SensorRequestHandler to get sensor data
-                val responseData = sensorRequestHandler?.handleRequest(requestId, capabilityId, params)
-                
-                // Insert response into _responses collection
-                val responseDoc = org.json.JSONObject().apply {
-                    put("request_id", requestId)
-                    put("status", "success")
-                    put("data", responseData)
-                    put("timestamp", System.currentTimeMillis() / 1000)
-                }
-                
-                AtmosphereNative.insert(atmosphereHandle, "_responses", requestId, responseDoc.toString())
-                Log.i(TAG, "✅ Sensor response sent for $requestId: ${responseData?.length() ?: 0} bytes")
-                
-                // Update request status to completed
-                request.put("status", "completed")
-                AtmosphereNative.insert(atmosphereHandle, "_requests", requestId, request.toString())
-                
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to handle sensor request $requestId", e)
-                
-                // Send error response
-                val errorDoc = org.json.JSONObject().apply {
-                    put("request_id", requestId)
-                    put("status", "error")
-                    put("error", e.message ?: "Unknown error")
-                    put("timestamp", System.currentTimeMillis() / 1000)
-                }
-                
-                try {
-                    AtmosphereNative.insert(atmosphereHandle, "_responses", requestId, errorDoc.toString())
-                    
-                    // Update request status to failed
-                    request.put("status", "failed")
-                    request.put("error", e.message)
-                    AtmosphereNative.insert(atmosphereHandle, "_requests", requestId, request.toString())
-                } catch (e2: Exception) {
-                    Log.e(TAG, "Failed to send error response", e2)
-                }
-            }
         }
     }
 
@@ -1610,9 +1505,6 @@ class AtmosphereService : Service() {
             // Cleanup local inference
             localInferenceEngine?.destroy()
             localInferenceEngine = null
-            
-            // Cleanup sensor request handler
-            sensorRequestHandler = null
             
             // Stop Rust core mesh
             if (atmosphereHandle != 0L) {
