@@ -94,4 +94,31 @@ object AtmosphereNative {
      * @return JSON object with status info as string
      */
     external fun health(handle: Long): String
+
+    /**
+     * Initialize the text embedder with model files.
+     * 
+     * @param modelsDir Path to directory containing model.onnx and tokenizer.json
+     * @return true if initialization succeeded, false otherwise
+     */
+    external fun initEmbedder(modelsDir: String): Boolean
+
+    /**
+     * Embed a text string into a 384-dimensional vector.
+     * Uses all-MiniLM-L6-v2 ONNX model for sentence embeddings.
+     * 
+     * @param text Text to embed
+     * @return FloatArray of 384 dimensions, or null if failed
+     */
+    external fun nativeEmbed(text: String): FloatArray?
+
+    /**
+     * Calculate cosine similarity between two embedding vectors.
+     * Returns a value between -1.0 (opposite) and 1.0 (identical).
+     * 
+     * @param a First embedding vector (384 dimensions)
+     * @param b Second embedding vector (384 dimensions)
+     * @return Similarity score, or 0.0 if failed
+     */
+    external fun nativeCosineSimilarity(a: FloatArray, b: FloatArray): Float
 }

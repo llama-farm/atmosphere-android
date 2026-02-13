@@ -844,6 +844,7 @@ class AtmosphereService : Service() {
             
             // Start CRDT mesh engine (runs alongside existing relay/WebSocket)
             startCrdtMesh(nodeId)
+            initializeEmbedder()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize node", e)
             throw e
@@ -883,6 +884,61 @@ class AtmosphereService : Service() {
         
         Log.i(TAG, "Capabilities initialized: camera=${cameraCapability?.isAvailable?.value}, " +
                    "stt=${voiceCapability?.sttAvailable?.value}, tts=${voiceCapability?.ttsAvailable?.value}")
+    }
+
+    /**
+     * Initialize the text embedder from bundled ONNX model files.
+     * Copies model.onnx and tokenizer.json from assets to internal storage if needed.
+     */
+    private fun initializeEmbedder() {
+        try {
+            // Create models directory in internal storage
+            val modelsDir = java.io.File(filesDir, "models")
+            modelsDir.mkdirs()
+            
+            val modelFile = java.io.File(modelsDir, "model.onnx")
+            val tokenizerFile = java.io.File(modelsDir, "tokenizer.json")
+            
+            // Copy model.onnx from assets if not present or outdated
+            if (!modelFile.exists()) {
+                Log.i(TAG, "Copying model.onnx from assets (~22MB)...")
+                assets.open("models/model.onnx").use { input ->
+                    modelFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                Log.i(TAG, "model.onnx copied successfully")
+            }
+            
+            // Copy tokenizer.json from assets if not present
+            if (!tokenizerFile.exists()) {
+                Log.i(TAG, "Copying tokenizer.json from assets...")
+                assets.open("models/tokenizer.json").use { input ->
+                    tokenizerFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                Log.i(TAG, "tokenizer.json copied successfully")
+            }
+            
+            // Initialize embedder via JNI
+            val success = AtmosphereNative.initEmbedder(modelsDir.absolutePath)
+            if (success) {
+                Log.i(TAG, "✅ Text embedder initialized successfully")
+                
+                // Test embedding
+                val testEmbedding = AtmosphereNative.nativeEmbed("Hello world")
+                if (testEmbedding != null && testEmbedding.size == 384) {
+                    Log.i(TAG, "✅ Test embedding: ${testEmbedding.size} dimensions")
+                } else {
+                    Log.w(TAG, "⚠️ Test embedding failed or wrong dimensions")
+                }
+            } else {
+                Log.w(TAG, "⚠️ Failed to initialize embedder")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize embedder", e)
+        }
     }
     
     /**
@@ -1070,20 +1126,69 @@ class AtmosphereService : Service() {
     private fun registerDeviceCapabilities(peerId: String) {
         val handle = atmosphereHandle
         if (handle == 0L) return
+        
+        serviceScope.launch {
+            try {
+                val am = getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+                val memInfo = android.app.ActivityManager.MemoryInfo()
+                am.getMemoryInfo(memInfo)
+                val totalRamGb = memInfo.totalMem / (1024.0 * 1024.0 * 1024.0)
+                val cpuCores = Runtime.getRuntime().availableProcessors()
+                val deviceModel = android.os.Build.MODEL ?: "Android"
+                
+                // Battery info
+                val bm = getSystemService(android.content.Context.BATTERY_SERVICE) as? android.os.BatteryManager
+                val batteryLevel = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+                val isCharging = bm?.isCharging ?: false
+                
+                // Device info object to reuse
+                val deviceInfo = org.json.JSONObject().apply {
+                    put("cpu_cores", cpuCores)
+                    put("memory_gb", String.format("%.1f", totalRamGb).toDouble())
+                    put("gpu_available", false)
+                    put("platform", deviceModel)
+                    put("battery_level", batteryLevel)
+                    put("is_charging", isCharging)
+                }
+                
+                // 1. Register Llama 3.2 1B (bundled GGUF model)
+                registerLlama32Capability(peerId, deviceModel, deviceInfo)
+                
+                // 2. Detect and register Gemini Nano via ML Kit GenAI
+                registerGeminiNanoCapability(peerId, deviceModel, deviceInfo)
+                
+                // 3. Register text embedding capability
+                registerEmbeddingCapability(peerId, deviceModel, deviceInfo)
+
+                // Register device status doc
+                val statusDoc = org.json.JSONObject().apply {
+                    put("type", "announcement")
+                    put("peer_id", peerId)
+                    put("node_name", deviceModel)
+                    put("platform", "android")
+                    put("cpu_cores", cpuCores)
+                    put("memory_gb", String.format("%.1f", totalRamGb).toDouble())
+                    put("battery_level", batteryLevel)
+                    put("is_charging", isCharging)
+                    put("timestamp", System.currentTimeMillis())
+                }
+                AtmosphereNative.insert(handle, "_status", "device:$peerId", statusDoc.toString())
+                Log.i(TAG, "📱 Device registered: $deviceModel, ${cpuCores} cores, ${String.format("%.1f", totalRamGb)}GB RAM, battery=$batteryLevel%")
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to register device capabilities", e)
+            }
+        }
+    }
+    
+    /**
+     * Register Llama 3.2 1B capability (bundled GGUF model).
+     */
+    private fun registerLlama32Capability(peerId: String, deviceModel: String, deviceInfo: org.json.JSONObject) {
+        val handle = atmosphereHandle
+        if (handle == 0L) return
+        
         try {
-            val am = getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager
-            val memInfo = android.app.ActivityManager.MemoryInfo()
-            am.getMemoryInfo(memInfo)
-            val totalRamGb = memInfo.totalMem / (1024.0 * 1024.0 * 1024.0)
-            val cpuCores = Runtime.getRuntime().availableProcessors()
-            val deviceModel = android.os.Build.MODEL ?: "Android"
-            
-            // Battery info
-            val bm = getSystemService(android.content.Context.BATTERY_SERVICE) as? android.os.BatteryManager
-            val batteryLevel = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
-            val isCharging = bm?.isCharging ?: false
-            
-            // Register on-device LLM capability
             val llmDoc = org.json.JSONObject().apply {
                 put("id", "local:llama-3.2-1b:default")
                 put("peer_id", peerId)
@@ -1091,19 +1196,14 @@ class AtmosphereService : Service() {
                 put("capability_type", "llm")
                 put("description", "On-device Llama 3.2 1B Instruct (Q4_K_M) — fully offline inference on Android")
                 put("model", "Llama-3.2-1B-Instruct-Q4_K_M")
-                put("keywords", org.json.JSONArray(listOf("local", "on-device", "offline", "llama", "chat", "instruct", "mobile")))
-                put("device_info", org.json.JSONObject().apply {
-                    put("cpu_cores", cpuCores)
-                    put("memory_gb", String.format("%.1f", totalRamGb).toDouble())
-                    put("gpu_available", false)
-                    put("platform", deviceModel)
-                    put("battery_level", batteryLevel)
-                    put("is_charging", isCharging)
-                })
+                put("keywords", org.json.JSONArray(listOf("local", "on-device", "offline", "llama", "chat", "instruct", "mobile", "quantized")))
+                put("device_info", deviceInfo)
                 put("llm_info", org.json.JSONObject().apply {
                     put("model_name", "Llama-3.2-1B-Instruct-Q4_K_M")
                     put("model_tier", "tiny")
+                    put("model_params_b", 1.0)
                     put("context_length", 4096)
+                    put("quantization", "Q4_K_M")
                     put("supports_tools", false)
                     put("supports_vision", false)
                     put("has_rag", false)
@@ -1121,25 +1221,174 @@ class AtmosphereService : Service() {
                 put("hops", 0)
             }
             AtmosphereNative.insert(handle, "_capabilities", "local:llama-3.2-1b:default", llmDoc.toString())
-            Log.i(TAG, "📱 Registered on-device LLM capability: Llama-3.2-1B")
-
-            // Register device status doc
-            val statusDoc = org.json.JSONObject().apply {
-                put("type", "announcement")
-                put("peer_id", peerId)
-                put("node_name", deviceModel)
-                put("platform", "android")
-                put("cpu_cores", cpuCores)
-                put("memory_gb", String.format("%.1f", totalRamGb).toDouble())
-                put("battery_level", batteryLevel)
-                put("is_charging", isCharging)
-                put("timestamp", System.currentTimeMillis())
-            }
-            AtmosphereNative.insert(handle, "_status", "device:$peerId", statusDoc.toString())
-            Log.i(TAG, "📱 Registered device status: $deviceModel, ${cpuCores} cores, ${String.format("%.1f", totalRamGb)}GB RAM, battery=$batteryLevel%")
-
+            Log.i(TAG, "✅ Registered Llama 3.2 1B capability")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to register device capabilities", e)
+            Log.e(TAG, "Failed to register Llama 3.2 1B capability", e)
+        }
+    }
+    
+    /**
+     * Detect and register Gemini Nano capability via ML Kit GenAI.
+     */
+    private suspend fun registerGeminiNanoCapability(peerId: String, deviceModel: String, deviceInfo: org.json.JSONObject) {
+        val handle = atmosphereHandle
+        if (handle == 0L) return
+        
+        try {
+            val geminiInfo = com.llamafarm.atmosphere.capabilities.GeminiNanoDetector.detect(applicationContext)
+            
+            if (geminiInfo != null) {
+                Log.i(TAG, "🔍 Gemini Nano detected: ${geminiInfo.status}, version=${geminiInfo.version}")
+                
+                // Register Gemini Nano prompt capability
+                if (geminiInfo.status in listOf("AVAILABLE", "DOWNLOADABLE", "DOWNLOADING")) {
+                    val geminiDoc = org.json.JSONObject().apply {
+                        put("id", "local:gemini-nano:${geminiInfo.version ?: "v2"}")
+                        put("peer_id", peerId)
+                        put("peer_name", deviceModel)
+                        put("capability_type", "llm")
+                        put("description", "Google Gemini Nano ${geminiInfo.version ?: "v2"} — on-device multimodal AI via ML Kit")
+                        put("model", "gemini-nano-${geminiInfo.version ?: "v2"}")
+                        put("keywords", org.json.JSONArray(listOf(
+                            "google", "gemini", "nano", "on-device", "multimodal", 
+                            "prompt", "vision", "ml-kit", geminiInfo.status.toLowerCase()
+                        )))
+                        put("device_info", deviceInfo)
+                        put("llm_info", org.json.JSONObject().apply {
+                            put("model_name", "Gemini Nano ${geminiInfo.version ?: "v2"}")
+                            put("model_tier", "small")
+                            put("model_params_b", if (geminiInfo.version == "nano-v3") 4.0 else 2.7)
+                            put("context_length", 4000)
+                            put("supports_tools", false)
+                            put("supports_vision", true)
+                            put("has_rag", false)
+                            put("aicore_status", geminiInfo.status)
+                            put("capabilities", org.json.JSONArray(geminiInfo.capabilities))
+                        })
+                        put("cost", org.json.JSONObject().apply {
+                            put("local", true)
+                            put("estimated_cost", 0.0)
+                            put("battery_impact", 0.4)
+                        })
+                        put("status", org.json.JSONObject().apply {
+                            put("available", geminiInfo.available)
+                            put("load", 0.0)
+                            put("last_seen", System.currentTimeMillis() / 1000)
+                        })
+                        put("hops", 0)
+                    }
+                    
+                    AtmosphereNative.insert(handle, "_capabilities", "local:gemini-nano:${geminiInfo.version ?: "v2"}", geminiDoc.toString())
+                    Log.i(TAG, "✅ Registered Gemini Nano ${geminiInfo.version ?: "v2"} capability (${geminiInfo.status})")
+                    
+                    // Register individual ML Kit GenAI feature capabilities
+                    for (capability in geminiInfo.capabilities) {
+                        if (capability != "prompt") { // prompt is already registered above
+                            registerMlKitFeature(peerId, deviceModel, deviceInfo, capability, geminiInfo.version)
+                        }
+                    }
+                }
+            } else {
+                Log.d(TAG, "Gemini Nano not available on this device")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to detect Gemini Nano: ${e.message}")
+        }
+    }
+    
+    /**
+     * Register a specific ML Kit GenAI feature capability.
+     */
+    private fun registerMlKitFeature(
+        peerId: String,
+        deviceModel: String,
+        deviceInfo: org.json.JSONObject,
+        feature: String,
+        nanoVersion: String?
+    ) {
+        val handle = atmosphereHandle
+        if (handle == 0L) return
+        
+        try {
+            val featureInfo = when (feature) {
+                "summarization" -> Triple("Summarization", "Summarize articles or chat conversations", listOf("summarize", "summary", "tldr"))
+                "proofreading" -> Triple("Proofreading", "Polish content by refining grammar and fixing spelling", listOf("grammar", "spelling", "proofread"))
+                "rewriting" -> Triple("Rewriting", "Rewrite messages in different tones or styles", listOf("rewrite", "rephrase", "tone"))
+                "image_description" -> Triple("Image Description", "Generate descriptions of images", listOf("vision", "image", "describe", "caption"))
+                else -> return
+            }
+            
+            val (name, desc, keywords) = featureInfo
+            
+            val featureDoc = org.json.JSONObject().apply {
+                put("id", "local:gemini-nano-$feature:$nanoVersion")
+                put("peer_id", peerId)
+                put("peer_name", deviceModel)
+                put("capability_type", "ml-kit-$feature")
+                put("description", "$name via Gemini Nano — $desc")
+                put("model", "gemini-nano-$nanoVersion-$feature")
+                put("keywords", org.json.JSONArray(keywords + listOf("gemini", "nano", "ml-kit", "on-device")))
+                put("device_info", deviceInfo)
+                put("cost", org.json.JSONObject().apply {
+                    put("local", true)
+                    put("estimated_cost", 0.0)
+                    put("battery_impact", 0.2)
+                })
+                put("status", org.json.JSONObject().apply {
+                    put("available", true)
+                    put("load", 0.0)
+                    put("last_seen", System.currentTimeMillis() / 1000)
+                })
+                put("hops", 0)
+            }
+            
+            AtmosphereNative.insert(handle, "_capabilities", "local:gemini-nano-$feature:$nanoVersion", featureDoc.toString())
+            Log.i(TAG, "✅ Registered ML Kit $name capability")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register ML Kit $feature: ${e.message}")
+        }
+    }
+    
+    /**
+     * Register text embedding capability (all-MiniLM-L6-v2 via ONNX).
+     */
+    private fun registerEmbeddingCapability(peerId: String, deviceModel: String, deviceInfo: org.json.JSONObject) {
+        val handle = atmosphereHandle
+        if (handle == 0L) return
+        
+        try {
+            val embeddingDoc = org.json.JSONObject().apply {
+                put("id", "local:embedding:minilm-l6-v2")
+                put("peer_id", peerId)
+                put("peer_name", deviceModel)
+                put("capability_type", "embedding")
+                put("description", "Text embedding model all-MiniLM-L6-v2 (384-dim) — semantic search and similarity")
+                put("model", "all-MiniLM-L6-v2")
+                put("keywords", org.json.JSONArray(listOf("embedding", "semantic", "similarity", "search", "vector", "onnx", "on-device")))
+                put("device_info", deviceInfo)
+                put("embedding_info", org.json.JSONObject().apply {
+                    put("model_name", "all-MiniLM-L6-v2")
+                    put("dimensions", 384)
+                    put("max_tokens", 256)
+                    put("runtime", "onnx")
+                })
+                put("cost", org.json.JSONObject().apply {
+                    put("local", true)
+                    put("estimated_cost", 0.0)
+                    put("battery_impact", 0.1)
+                })
+                put("status", org.json.JSONObject().apply {
+                    put("available", true)
+                    put("load", 0.0)
+                    put("last_seen", System.currentTimeMillis() / 1000)
+                })
+                put("hops", 0)
+            }
+            
+            AtmosphereNative.insert(handle, "_capabilities", "local:embedding:minilm-l6-v2", embeddingDoc.toString())
+            Log.i(TAG, "✅ Registered text embedding capability (all-MiniLM-L6-v2)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register embedding capability", e)
         }
     }
 
