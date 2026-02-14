@@ -875,8 +875,12 @@ class AtmosphereService : Service() {
         voiceCapability = VoiceCapability(applicationContext)
         
         // Initialize mesh capability handler (exposes capabilities to mesh)
-        meshCapabilityHandler = MeshCapabilityHandler(applicationContext, nodeId)
-        Log.i(TAG, "Mesh capability handler initialized with capabilities: ${meshCapabilityHandler?.getCapabilityNames()}")
+        try {
+            meshCapabilityHandler = MeshCapabilityHandler(applicationContext, nodeId)
+            Log.i(TAG, "Mesh capability handler initialized with capabilities: ${meshCapabilityHandler?.getCapabilityNames()}")
+        } catch (e: Throwable) {
+            Log.w(TAG, "⚠️ MeshCapabilityHandler init failed (ORT Java binding issue?), continuing without vision", e)
+        }
         
         // Observe cost factors
         serviceScope.launch {
@@ -927,8 +931,12 @@ class AtmosphereService : Service() {
                 Log.i(TAG, "tokenizer.json copied successfully")
             }
             
-            // Initialize embedder via JNI
-            val success = AtmosphereNative.initEmbedder(modelsDir.absolutePath)
+            // Set ORT_DYLIB_PATH to the app's native library directory where libonnxruntime.so lives
+            val nativeLibDir = applicationInfo.nativeLibraryDir
+            Log.i(TAG, "Setting ORT_DYLIB_PATH to: $nativeLibDir/libonnxruntime.so")
+            
+            // Initialize embedder via JNI (passes both models dir and ORT lib path)
+            val success = AtmosphereNative.initEmbedder(modelsDir.absolutePath, "$nativeLibDir/libonnxruntime.so")
             if (success) {
                 Log.i(TAG, "✅ Text embedder initialized successfully")
                 

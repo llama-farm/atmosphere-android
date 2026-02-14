@@ -175,7 +175,8 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     
     // ONNX Runtime for vision models
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.1")
+    // ORT 1.23.0 — provides both Java API (VisionCapability) and libonnxruntime.so (for Rust ort crate via ORT_DYLIB_PATH)
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.23.0")
     
     // Gson for JSON parsing
     implementation("com.google.code.gson:gson:2.10.1")

@@ -101,7 +101,7 @@ object AtmosphereNative {
      * @param modelsDir Path to directory containing model.onnx and tokenizer.json
      * @return true if initialization succeeded, false otherwise
      */
-    external fun initEmbedder(modelsDir: String): Boolean
+    external fun initEmbedder(modelsDir: String, ortLibPath: String = ""): Boolean
 
     /**
      * Embed a text string into a 384-dimensional vector.

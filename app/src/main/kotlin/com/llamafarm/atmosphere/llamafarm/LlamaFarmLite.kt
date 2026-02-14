@@ -6,8 +6,6 @@ import android.util.Log
 import com.llamafarm.atmosphere.inference.LlamaCppEngine
 import com.llamafarm.atmosphere.inference.ModelManager
 import com.llamafarm.atmosphere.rag.LocalRagStore
-import com.llamafarm.atmosphere.vision.VisionCapability
-import com.llamafarm.atmosphere.vision.DetectionResult
 import com.llamafarm.atmosphere.capabilities.CameraCapability
 import com.llamafarm.atmosphere.capabilities.CameraFacing
 import kotlinx.coroutines.Dispatchers
@@ -24,7 +22,7 @@ import org.json.JSONObject
  * - LLM inference (LlamaCppEngine with ARM AiChat)
  * - Prompt management (PromptManager)
  * - RAG (LocalRagStore)
- * - Vision (VisionCapability with TFLite)
+ * - Vision (removed)
  * 
  * Exposes all capabilities through the Atmosphere SDK AIDL interface.
  * 
@@ -74,8 +72,6 @@ class LlamaFarmLite private constructor(
     private val modelManager = ModelManager(context)
     private val promptManager = PromptManager()
     private val ragStore = LocalRagStore()
-    private val visionCapability = VisionCapability(context, "local", cameraCapability)
-    
     // State
     private var currentModelId: String? = null
     private var currentPersona: String = "assistant"
@@ -246,68 +242,10 @@ class LlamaFarmLite private constructor(
         return ragStore.listIndexes()
     }
     
-    // ========================== Vision API ==========================
+    // ========================== Vision API (removed) ==========================
     
-    /**
-     * Check if vision is ready.
-     */
-    fun isVisionReady(): Boolean {
-        return visionCapability.isReady.value
-    }
-    
-    /**
-     * Detect objects in an image.
-     */
-    suspend fun detectObjects(imageBytes: ByteArray, sourceId: String = "api"): DetectionResult? {
-        return visionCapability.detect(imageBytes, sourceId)
-    }
-    
-    /**
-     * Capture from camera and detect.
-     */
-    suspend fun captureAndDetect(facing: CameraFacing = CameraFacing.BACK): DetectionResult? {
-        return visionCapability.captureAndDetect(facing)
-    }
-    
-    /**
-     * Set vision confidence threshold for escalation.
-     */
-    fun setVisionConfidenceThreshold(threshold: Float) {
-        visionCapability.setConfidenceThreshold(threshold)
-    }
-    
-    /**
-     * Switch vision model.
-     */
-    suspend fun switchVisionModel(modelId: String, version: String): Boolean {
-        return visionCapability.switchModel(modelId, version)
-    }
-    
-    /**
-     * Train a custom vision model on a dataset.
-     * 
-     * @param datasetPath URI or path to the dataset folder
-     * @param modelName Name for the new model
-     * @return Result with model ID or error
-     */
-    suspend fun trainVisionModel(datasetPath: String, modelName: String): Result<String> {
-        return withContext(Dispatchers.IO) {
-            try {
-                // TODO: Implement actual training via LlamaFarm API
-                // POST /v1/vision/train with dataset_path, model_name, epochs, etc.
-                // For now, return a mock success
-                Log.i(TAG, "Training model $modelName with dataset at $datasetPath")
-                
-                // Simulate training delay
-                kotlinx.coroutines.delay(5000)
-                
-                Result.success(modelName)
-            } catch (e: Exception) {
-                Log.e(TAG, "Training failed", e)
-                Result.failure(e)
-            }
-        }
-    }
+    fun isVisionReady(): Boolean = false
+    suspend fun switchVisionModel(modelId: String, version: String): Boolean = false
     
     // ========================== Prompt API ==========================
     
@@ -402,8 +340,8 @@ class LlamaFarmLite private constructor(
             put("algorithm", "BM25")
         })
         
-        // Vision capability
-        capabilities.put("vision", visionCapability.getCapabilityJson())
+        // Vision capability (removed)
+        capabilities.put("vision", JSONObject().apply { put("available", false) })
         
         // Prompt management
         capabilities.put("prompts", JSONObject().apply {
@@ -458,7 +396,6 @@ class LlamaFarmLite private constructor(
      */
     fun destroy() {
         llmEngine.destroy()
-        visionCapability.destroy()
         Log.i(TAG, "LlamaFarmLite destroyed")
     }
 }

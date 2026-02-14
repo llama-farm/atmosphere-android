@@ -208,15 +208,6 @@ fun SettingsScreen(
                 HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
                 
                 SettingsItem(
-                    title = "Vision",
-                    subtitle = "Camera and vision model testing",
-                    icon = Icons.Default.CameraAlt,
-                    onClick = { navController?.navigate(Screen.VisionTest.route) }
-                )
-                
-                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
-                
-                SettingsItem(
                     title = "Connected Apps",
                     subtitle = "Manage apps connected to Atmosphere",
                     icon = Icons.Default.Apps,
