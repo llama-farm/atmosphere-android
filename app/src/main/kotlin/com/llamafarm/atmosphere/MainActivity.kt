@@ -217,14 +217,30 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestBlePermissionsIfNeeded() {
+        val needed = mutableListOf<String>()
+
+        // BLE permissions (Android 12+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val needed = arrayOf(
+            needed += arrayOf(
                 Manifest.permission.BLUETOOTH_SCAN,
                 Manifest.permission.BLUETOOTH_ADVERTISE,
                 Manifest.permission.BLUETOOTH_CONNECT,
             ).filter { ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED }
-            if (needed.isNotEmpty()) blePermissionLauncher.launch(needed.toTypedArray())
         }
+
+        // Fine location — required for BLE scanning on older APIs and Wi-Fi Aware
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            needed += Manifest.permission.ACCESS_FINE_LOCATION
+        }
+
+        // Wi-Fi Aware / Nearby (Android 13+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
+                needed += Manifest.permission.NEARBY_WIFI_DEVICES
+            }
+        }
+
+        if (needed.isNotEmpty()) blePermissionLauncher.launch(needed.toTypedArray())
     }
 
     private fun initializeAtmosphereService() {
