@@ -107,6 +107,7 @@ class AtmosphereService : Service() {
     fun getMeshId(): String = "atmosphere-playground-mesh-v1" // Hardcoded for now
     fun getAtmosphereHandle(): Long = atmosphereHandle
     fun getCrdtPeerCount(): Int = getPeerCount()
+    fun getServiceUptimeSeconds(): Long = if (serviceStartTime > 0) (System.currentTimeMillis() - serviceStartTime) / 1000 else 0L
     
     /**
      * Get wrapped CRDT core for legacy code compatibility.
@@ -193,6 +194,9 @@ class AtmosphereService : Service() {
     
     // Rust core handle (JNI)
     private var atmosphereHandle: Long = 0
+    
+    // Service uptime tracking
+    private var serviceStartTime: Long = 0
     
     // Peer state exposed to UI
     private val _crdtPeers = MutableStateFlow<List<SimplePeerInfo>>(emptyList())
@@ -302,6 +306,7 @@ class AtmosphereService : Service() {
                 // Initialize native node
                 initializeNode()
 
+                serviceStartTime = System.currentTimeMillis()
                 _state.value = ServiceState.RUNNING
                 updateNotification("Connected • 0 peers")
                 Log.i(TAG, "Node started successfully")
@@ -312,6 +317,7 @@ class AtmosphereService : Service() {
                 
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start node", e)
+                serviceStartTime = 0
                 _state.value = ServiceState.STOPPED
                 stopSelf()
             }
@@ -800,6 +806,7 @@ class AtmosphereService : Service() {
                 Log.e(TAG, "Error during shutdown", e)
             } finally {
                 releaseWakeLock()
+                serviceStartTime = 0
                 _state.value = ServiceState.STOPPED
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -1627,11 +1634,16 @@ class AtmosphereService : Service() {
      * Get current service statistics.
      */
     fun getStats(): ServiceStats {
+        val uptimeMs = if (serviceStartTime > 0) {
+            System.currentTimeMillis() - serviceStartTime
+        } else {
+            0L
+        }
         return ServiceStats(
             state = _state.value,
             nodeId = _nodeId.value,
             connectedPeers = _connectedPeers.value,
-            uptime = 0L // TODO: Track actual uptime
+            uptime = uptimeMs / 1000  // Return uptime in seconds
         )
     }
     

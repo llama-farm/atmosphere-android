@@ -58,14 +58,13 @@ class MeshDebugViewModel(application: Application) : AndroidViewModel(applicatio
     private val _transfers = MutableStateFlow<List<com.llamafarm.atmosphere.network.TransferInfo>>(emptyList())
     val transfers: StateFlow<List<com.llamafarm.atmosphere.network.TransferInfo>> = _transfers.asStateFlow()
 
-    // Project state (fetched from Mac daemon via HTTP)
+    // Project state derived from local JNI/CRDT capability docs
     private val _projects = MutableStateFlow<List<ProjectInfo>>(emptyList())
     val projects: StateFlow<List<ProjectInfo>> = _projects.asStateFlow()
 
     private val _projectsLoading = MutableStateFlow(false)
     val projectsLoading: StateFlow<Boolean> = _projectsLoading.asStateFlow()
 
-    private val projectApiClient = MeshApiClient("http://192.168.86.237:11472")
 
     // Routing test state
     private val _routingHistory = MutableStateFlow<List<RoutingTestResult>>(emptyList())
@@ -127,6 +126,7 @@ class MeshDebugViewModel(application: Application) : AndroidViewModel(applicatio
                             val capsJson = AtmosphereNative.capabilities(handle)
                             val caps = parseCapabilities(capsJson)
                             _capabilities.value = caps
+                            _projects.value = deriveProjectsFromCapabilities(caps)
                             // Build gradient table from capabilities
                             _gradientTable.value = caps.map { cap ->
                                 GradientTableEntry(
@@ -153,14 +153,18 @@ class MeshDebugViewModel(application: Application) : AndroidViewModel(applicatio
                         // --- Health ---
                         try {
                             val healthJson = AtmosphereNative.health(handle)
-                            _health.value = parseHealth(healthJson)
+                            val svc = com.llamafarm.atmosphere.service.ServiceManager.getConnector().getService()
+                            val serviceUptime = svc?.getServiceUptimeSeconds() ?: 0L
+                            _health.value = parseMeshHealth(healthJson, serviceUptime)
                         } catch (e: Exception) {
                             Log.w(TAG, "health() failed", e)
                         }
 
                         // --- Stats ---
+                        val svc = com.llamafarm.atmosphere.service.ServiceManager.getConnector().getService()
+                        val serviceUptime = svc?.getServiceUptimeSeconds() ?: ((System.currentTimeMillis() - startTime) / 1000)
                         _stats.value = MeshStats(
-                            uptimeSeconds = (System.currentTimeMillis() - startTime) / 1000,
+                            uptimeSeconds = serviceUptime,
                             totalRequests = _requests.value.size,
                             avgLatencyMs = 0f,
                             errorCount = 0,
@@ -291,25 +295,58 @@ class MeshDebugViewModel(application: Application) : AndroidViewModel(applicatio
         return (0 until arr.length()).map { arr.getString(it) }
     }
 
-    private fun parseHealth(json: String): MeshHealth? {
+    private fun parseMeshHealth(json: String, serviceUptime: Long = 0L): MeshHealth? {
         return try {
             val obj = JSONObject(json)
+            // Use Build.MODEL as fallback if nodeName is empty
+            val nodeName = obj.optString("name", "").let { name ->
+                if (name.isEmpty()) "${Build.MANUFACTURER} ${Build.MODEL}" else name
+            }
+            // Use service uptime if JNI doesn't provide it
+            val uptimeSeconds = obj.optLong("uptime_secs", 0).let { uptime ->
+                if (uptime == 0L) serviceUptime else uptime
+            }
             MeshHealth(
                 status = obj.optString("status", "unknown"),
                 peerId = obj.optString("peer_id", ""),
-                nodeName = obj.optString("name", ""),
+                nodeName = nodeName,
                 version = obj.optString("version", "0.1.0"),
                 meshPort = obj.optInt("mesh_port", 0),
                 peerCount = obj.optInt("peer_count", 0),
                 capabilityCount = obj.optInt("capability_count", 0),
-                uptimeSeconds = obj.optLong("uptime_secs", 0),
+                uptimeSeconds = uptimeSeconds,
                 transports = mapOf("lan" to true),
                 raw = obj
             )
         } catch (e: Exception) {
-            Log.w(TAG, "parseHealth failed", e)
+            Log.w(TAG, "parseMeshHealth failed", e)
             null
         }
+    }
+
+    private fun deriveProjectsFromCapabilities(caps: List<MeshCapabilityInfo>): List<ProjectInfo> {
+        return caps
+            .groupBy { cap ->
+                val raw = cap.id.substringBefore(':').ifBlank { "local" }
+                if (raw.contains('/')) raw else "local/$raw"
+            }
+            .map { (projectPath, group) ->
+                val namespace = projectPath.substringBefore('/')
+                val projectId = projectPath.substringAfter('/', projectPath)
+                val sample = group.first()
+                ProjectInfo(
+                    namespace = namespace,
+                    projectId = projectId,
+                    name = projectId,
+                    model = sample.model,
+                    modelProvider = null,
+                    description = sample.description,
+                    hasRag = group.any { it.hasRag },
+                    hasTools = group.any { it.hasTools },
+                    isDiscoverable = true
+                )
+            }
+            .sortedBy { "${it.namespace}/${it.projectId}" }
     }
 
     private fun parseRequests(json: String): List<MeshRequestInfo> {
@@ -530,13 +567,13 @@ class MeshDebugViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    // --- Project management (HTTP to Mac daemon) ---
+    // --- Project management (local JNI-derived projects) ---
 
     fun loadProjects() {
         viewModelScope.launch {
             _projectsLoading.value = true
             try {
-                _projects.value = projectApiClient.fetchProjects()
+                _projects.value = deriveProjectsFromCapabilities(_capabilities.value)
             } catch (e: Exception) {
                 Log.e(TAG, "loadProjects failed", e)
             }
@@ -545,27 +582,13 @@ class MeshDebugViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun exposeProject(namespace: String, projectId: String) {
-        viewModelScope.launch {
-            try {
-                if (projectApiClient.exposeProject(namespace, projectId)) {
-                    loadProjects()
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "exposeProject failed", e)
-            }
-        }
+        // Local JNI mode: discovered CRDT projects are always visible.
+        addLog("info", "projects", "Expose ignored in local JNI mode: $namespace/$projectId")
     }
 
     fun hideProject(projectId: String) {
-        viewModelScope.launch {
-            try {
-                if (projectApiClient.hideProject(projectId)) {
-                    loadProjects()
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "hideProject failed", e)
-            }
-        }
+        // Local JNI mode: hiding is not persisted yet; this screen is read-only.
+        addLog("info", "projects", "Hide ignored in local JNI mode: $projectId")
     }
 
     override fun onCleared() {
