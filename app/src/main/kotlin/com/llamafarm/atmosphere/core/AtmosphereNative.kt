@@ -121,4 +121,67 @@ object AtmosphereNative {
      * @return Similarity score, or 0.0 if failed
      */
     external fun nativeCosineSimilarity(a: FloatArray, b: FloatArray): Float
+
+    // ========================================================================
+    // Wi-Fi Aware Transport
+    // ========================================================================
+
+    /**
+     * Notify Rust core that a Wi-Fi Aware peer was discovered.
+     * 
+     * @param handle Handle returned from init()
+     * @param peerId Peer handle/ID as string
+     * @param serviceInfo Service-specific info from discovery
+     */
+    external fun wifiAwarePeerDiscovered(handle: Long, peerId: String, serviceInfo: String)
+
+    /**
+     * Notify Rust core that a Wi-Fi Aware peer was lost.
+     * 
+     * @param handle Handle returned from init()
+     * @param peerId Peer handle/ID as string
+     */
+    external fun wifiAwarePeerLost(handle: Long, peerId: String)
+
+    /**
+     * Notify Rust core that data was received via Wi-Fi Aware.
+     * 
+     * @param handle Handle returned from init()
+     * @param peerId Peer handle/ID as string
+     * @param data Data bytes received
+     */
+    external fun wifiAwareDataReceived(handle: Long, peerId: String, data: ByteArray)
+
+    /**
+     * Send data to a Wi-Fi Aware peer.
+     * 
+     * @param handle Handle returned from init()
+     * @param peerId Peer handle/ID as string
+     * @param data Data bytes to send
+     * @return true if send was queued successfully
+     */
+    external fun wifiAwareSendData(handle: Long, peerId: String, data: ByteArray): Boolean
+
+    // ========================================================================
+    // BLE Transport
+    // ========================================================================
+
+    /**
+     * Notify Rust core that BLE data was received.
+     * 
+     * @param handle Handle returned from init()
+     * @param peerId Peer ID
+     * @param data Data bytes received
+     */
+    external fun bleDataReceived(handle: Long, peerId: String, data: ByteArray)
+
+    /**
+     * Send data to a BLE peer.
+     * 
+     * @param handle Handle returned from init()
+     * @param peerId Peer ID
+     * @param data Data bytes to send
+     * @return true if send was queued successfully
+     */
+    external fun bleSendData(handle: Long, peerId: String, data: ByteArray): Boolean
 }
