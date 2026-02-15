@@ -68,7 +68,6 @@ sealed class Screen(val route: String, val title: String, val icon: ImageVector?
     data object JoinMesh : Screen("join_mesh", "Join Mesh", null)
     data object Test : Screen("test", "Test", Icons.Default.Send)
     data object RAG : Screen("rag", "RAG", Icons.Default.Search)
-    data object VisionTest : Screen("vision_test", "Vision", Icons.Default.CameraAlt)
     data object ConnectedApps : Screen("connected_apps", "Apps", Icons.Default.Apps)
     data object TransportSettings : Screen("transport_settings", "Transport Settings", null)
 }

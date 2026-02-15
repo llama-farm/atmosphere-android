@@ -27,7 +27,7 @@ fun SettingsScreenNew(viewModel: MeshDebugViewModel) {
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         DashCard(title = "Connection", emoji = "🔗") {
-            StatRow("API Base", "localhost:11462")
+            StatRow("Data Source", "Local JNI (AtmosphereNative)")
             StatRow("Poll Interval", "3s")
             StatRow("Status", if (health != null) "Connected" else "Disconnected")
         }
