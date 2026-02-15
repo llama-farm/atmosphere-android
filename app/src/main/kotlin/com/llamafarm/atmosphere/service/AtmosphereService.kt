@@ -32,6 +32,8 @@ import com.llamafarm.atmosphere.router.SemanticRouter
 import com.llamafarm.atmosphere.router.RouteConstraints
 import com.llamafarm.atmosphere.inference.LocalInferenceEngine
 import com.llamafarm.atmosphere.core.AtmosphereNative
+import com.llamafarm.atmosphere.transport.BleTransportManager
+import com.llamafarm.atmosphere.transport.WifiAwareManager as AtmoWifiAwareManager
 // ClientServer removed — AIDL binder replaces TCP for Android IPC
 import org.json.JSONArray as JsonArray
 import kotlinx.coroutines.*
@@ -184,7 +186,9 @@ class AtmosphereService : Service() {
     private var lanDiscovery: LanDiscovery? = null
     // Mesh ID is now hardcoded (no saved meshes)
     
-    // BLE mesh transport removed - will be added back as Rust transport in atmosphere-core
+    // Transport managers
+    private var bleTransport: BleTransportManager? = null
+    private var wifiAwareTransport: AtmoWifiAwareManager? = null
     
     // Transport bridge: dedup cache for cross-transport forwarding
     private val seenNonces = java.util.LinkedHashMap<String, Long>(100, 0.75f, true)
@@ -390,12 +394,8 @@ class AtmosphereService : Service() {
      * Start BLE mesh transport for offline mesh communication.
      */
     /**
-     * LEGACY - BLE transport removed. Will be added back as Rust transport in atmosphere-core.
+     * BLE transport now wired in startCrdtMesh() via BleTransportManager.
      */
-    private fun startBleTransport() {
-        Log.d(TAG, "startBleTransport called but BLE transport removed (will be Rust transport)")
-        // No-op: BLE will be added back as proper Rust transport
-    }
     
     /**
      * Send an LLM request through the mesh.
@@ -993,6 +993,50 @@ class AtmosphereService : Service() {
             }
             Log.i(TAG, "🔮 Mesh request processor started")
 
+            // Start BLE transport (GATT server + scanner)
+            try {
+                val ble = BleTransportManager(
+                    context = applicationContext,
+                    atmosphereHandle = atmosphereHandle,
+                    peerId = nodeId.take(16),
+                    appId = "atmosphere"
+                )
+                if (ble.isAvailable.value) {
+                    ble.start()
+                    bleTransport = ble
+                    Log.i(TAG, "📡 BLE transport started")
+                } else {
+                    Log.w(TAG, "📡 BLE transport not available (missing permissions or hardware)")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "📡 BLE transport failed to start: ${e.message}")
+            }
+
+            // Start Wi-Fi Aware transport (publish + subscribe)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                try {
+                    val wifi = AtmoWifiAwareManager(
+                        context = applicationContext,
+                        atmosphereHandle = atmosphereHandle
+                    )
+                    if (wifi.isAvailable.value) {
+                        serviceScope.launch {
+                            try {
+                                wifi.start()
+                                wifiAwareTransport = wifi
+                                Log.i(TAG, "📶 Wi-Fi Aware transport started")
+                            } catch (e: Exception) {
+                                Log.w(TAG, "📶 Wi-Fi Aware transport failed to start: ${e.message}")
+                            }
+                        }
+                    } else {
+                        Log.w(TAG, "📶 Wi-Fi Aware not available (missing permissions or hardware)")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "📶 Wi-Fi Aware init failed: ${e.message}")
+                }
+            }
+
             // Periodically update mesh state for UI + sync capabilities to GossipManager
             serviceScope.launch {
                 var logged = false
@@ -1532,6 +1576,14 @@ class AtmosphereService : Service() {
             // Cleanup local inference
             localInferenceEngine?.destroy()
             localInferenceEngine = null
+            
+            // Stop BLE transport
+            bleTransport?.stop()
+            bleTransport = null
+            
+            // Stop Wi-Fi Aware transport
+            wifiAwareTransport?.stop()
+            wifiAwareTransport = null
             
             // Stop Rust core mesh
             if (atmosphereHandle != 0L) {
