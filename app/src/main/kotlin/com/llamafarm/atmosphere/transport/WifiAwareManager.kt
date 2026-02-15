@@ -46,7 +46,7 @@ class WifiAwareManager(
 ) {
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     
-    private var wifiAwareManager: WifiAwareManager? = null
+    private var awareManager: android.net.wifi.aware.WifiAwareManager? = null
     private var wifiAwareSession: WifiAwareSession? = null
     private var publishDiscoverySession: PublishDiscoverySession? = null
     private var subscribeDiscoverySession: SubscribeDiscoverySession? = null
@@ -84,9 +84,9 @@ class WifiAwareManager(
             return
         }
         
-        wifiAwareManager = context.getSystemService(Context.WIFI_AWARE_SERVICE) as? WifiAwareManager
+        awareManager = context.getSystemService(Context.WIFI_AWARE_SERVICE) as? android.net.wifi.aware.WifiAwareManager
         
-        val hasWifiAware = wifiAwareManager?.isAvailable == true
+        val hasWifiAware = awareManager != null
         val hasPermissions = checkPermissions()
         
         _isAvailable.value = hasWifiAware && hasPermissions
@@ -148,7 +148,7 @@ class WifiAwareManager(
             }
         }
         
-        wifiAwareManager?.attach(attachCallback, null)
+        awareManager?.attach(attachCallback, null)
     }
     
     /**
@@ -301,20 +301,10 @@ class WifiAwareManager(
         port: Int
     ): WifiAwareConnection = suspendCoroutine { continuation ->
         
-        val networkSpecifier = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            WifiAwareNetworkSpecifier.Builder(session, peerHandle)
-                .setPskPassphrase("atmosphere-mesh-2024")
-                .setPort(port)
-                .build()
-        } else {
-            @Suppress("DEPRECATION")
-            WifiAwareManager.newWifiAwareNetworkSpecifier(
-                session as? DiscoverySession,
-                peerHandle,
-                null,
-                "atmosphere-mesh-2024".toByteArray()
-            )
-        }
+        val networkSpecifier = WifiAwareNetworkSpecifier.Builder(session, peerHandle)
+            .setPskPassphrase("atmosphere-mesh-2024")
+            .setPort(port)
+            .build()
         
         val networkRequest = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI_AWARE)
