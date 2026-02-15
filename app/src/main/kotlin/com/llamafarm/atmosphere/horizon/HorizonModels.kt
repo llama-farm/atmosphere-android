@@ -1,12 +1,11 @@
 package com.llamafarm.atmosphere.horizon
 
-import kotlinx.serialization.Serializable
 
 /**
  * Data models for HORIZON app integration via Atmosphere mesh.
  */
 
-@Serializable
+
 data class MissionSummary(
     val callsign: String = "",
     val phase: String = "",
@@ -16,7 +15,7 @@ data class MissionSummary(
     val pendingActions: Int = 0
 )
 
-@Serializable
+
 data class Anomaly(
     val id: String,
     val title: String,
@@ -28,7 +27,7 @@ data class Anomaly(
     val resolved: Boolean = false
 )
 
-@Serializable
+
 data class AnomalySummary(
     val totalActive: Int = 0,
     val criticalCount: Int = 0,
@@ -36,7 +35,7 @@ data class AnomalySummary(
     val bySeverity: Map<String, List<Anomaly>> = emptyMap()
 )
 
-@Serializable
+
 data class AgentAction(
     val id: String,
     val sender: String,
@@ -49,7 +48,7 @@ data class AgentAction(
     val timestamp: String
 )
 
-@Serializable
+
 data class AgentStatus(
     val monitoring: Boolean = false,
     val totalMessages: Int = 0,
@@ -57,7 +56,7 @@ data class AgentStatus(
     val hilCriticalCount: Int = 0
 )
 
-@Serializable
+
 data class IntelBrief(
     val mission: String,
     val route: String,
@@ -69,7 +68,7 @@ data class IntelBrief(
     val recommendations: List<String> = emptyList()
 )
 
-@Serializable
+
 data class OsintItem(
     val id: String,
     val category: String,
@@ -80,7 +79,7 @@ data class OsintItem(
     val important: Boolean = false
 )
 
-@Serializable
+
 data class FuelState(
     val onboardLbs: Int = 0,
     val burnRateLbsHr: Int = 0,
@@ -92,7 +91,7 @@ data class FuelState(
 /**
  * App request/response wrappers for mesh communication.
  */
-@Serializable
+
 data class AppRequest(
     val type: String = "app_request",
     val requestId: String,
@@ -101,7 +100,7 @@ data class AppRequest(
     val params: Map<String, String> = emptyMap()
 )
 
-@Serializable
+
 data class AppResponse(
     val type: String = "app_response",
     val requestId: String,
@@ -109,7 +108,7 @@ data class AppResponse(
     val body: Map<String, Any>? = null
 )
 
-@Serializable
+
 data class PushEvent(
     val type: String = "push_delivery",
     val event: String,
