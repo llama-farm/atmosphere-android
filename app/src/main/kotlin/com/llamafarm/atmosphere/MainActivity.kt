@@ -367,7 +367,7 @@ fun AtmosphereDebuggerApp(
             composable(Screen.Mesh.route) { MeshPeersScreen(debugViewModel) }
             composable(Screen.Models.route) { ModelsScreenNew(debugViewModel) }
             composable(Screen.Projects.route) { ProjectsScreen(debugViewModel) }
-            composable(Screen.Routing.route) { RoutingScreen(debugViewModel) }
+            composable(Screen.Routing.route) { RoutingScreen(debugViewModel, atmosphereViewModel) }
             composable(Screen.Logs.route) { LogsScreen(debugViewModel) }
             composable(Screen.Settings.route) { SettingsScreenNew(debugViewModel) }
         }

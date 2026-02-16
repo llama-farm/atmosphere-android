@@ -1,6 +1,7 @@
 package com.llamafarm.atmosphere.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -16,14 +17,23 @@ import androidx.compose.ui.unit.sp
 import com.llamafarm.atmosphere.ui.components.*
 import com.llamafarm.atmosphere.ui.theme.*
 import com.llamafarm.atmosphere.viewmodel.MeshDebugViewModel
+import com.llamafarm.atmosphere.viewmodel.AtmosphereViewModel
 import java.text.SimpleDateFormat
 import java.util.*
 
 @Composable
-fun RoutingScreen(viewModel: MeshDebugViewModel) {
+fun RoutingScreen(viewModel: MeshDebugViewModel, atmosphereViewModel: AtmosphereViewModel? = null) {
     val history by viewModel.routingHistory.collectAsState()
     val isLoading by viewModel.isRoutingLoading.collectAsState()
     var query by remember { mutableStateOf("") }
+    var mode by remember { mutableStateOf(0) } // 0=Auto Route, 1=Direct Target
+    var selectedTarget by remember { mutableStateOf<String?>(null) }
+    var lastResponse by remember { mutableStateOf<String?>(null) }
+    var lastError by remember { mutableStateOf<String?>(null) }
+    var isExecuting by remember { mutableStateOf(false) }
+    
+    // Get available LLM capabilities from gossip (via AtmosphereViewModel)
+    val capabilities = atmosphereViewModel?.llmCapabilities?.collectAsState()?.value ?: emptyList()
 
     LazyColumn(
         modifier = Modifier
@@ -32,9 +42,97 @@ fun RoutingScreen(viewModel: MeshDebugViewModel) {
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Routing console
+        // Mode selector
         item {
-            DashCard(title = "Routing Test Console", emoji = "🧭") {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = mode == 0,
+                    onClick = { mode = 0 },
+                    label = { Text("🧭 Auto Route") },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = AccentBlue.copy(alpha = 0.2f),
+                        selectedLabelColor = AccentBlue,
+                        containerColor = CardBackground,
+                        labelColor = TextSecondary
+                    )
+                )
+                FilterChip(
+                    selected = mode == 1,
+                    onClick = { mode = 1 },
+                    label = { Text("🎯 Direct Target") },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = AccentOrange.copy(alpha = 0.2f),
+                        selectedLabelColor = AccentOrange,
+                        containerColor = CardBackground,
+                        labelColor = TextSecondary
+                    )
+                )
+            }
+        }
+
+        // Target selector (only in Direct Target mode)
+        if (mode == 1) {
+            item {
+                DashCard(title = "Select Target", emoji = "🎯") {
+                    if (capabilities.isEmpty()) {
+                        Text(
+                            "No LLM capabilities found in mesh.\nWait for gossip propagation or check peer connections.",
+                            color = TextMuted,
+                            fontSize = 13.sp
+                        )
+                    } else {
+                        capabilities.forEach { cap ->
+                            val isSelected = selectedTarget == cap.capabilityId
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(
+                                        if (isSelected) AccentBlue.copy(alpha = 0.1f) else CardBackground,
+                                        RoundedCornerShape(6.dp)
+                                    )
+                                    .clickable { selectedTarget = cap.capabilityId }
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                val icon = when {
+                                    cap.hops == 0 -> "📱"
+                                    else -> "🌐"
+                                }
+                                Text(icon, fontSize = 16.sp)
+                                Spacer(Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        cap.label,
+                                        color = if (isSelected) AccentBlue else TextPrimary,
+                                        fontWeight = FontWeight.Medium,
+                                        fontSize = 13.sp
+                                    )
+                                    Text(
+                                        "${cap.nodeName} • hops=${cap.hops} • ${cap.modelTier}",
+                                        color = TextMuted,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                                if (isSelected) {
+                                    Text("✓", color = AccentBlue, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                            Spacer(Modifier.height(4.dp))
+                        }
+                    }
+                }
+            }
+        }
+
+        // Query input + action buttons
+        item {
+            DashCard(
+                title = if (mode == 0) "Routing Test Console" else "Direct Request",
+                emoji = if (mode == 0) "🧭" else "🎯"
+            ) {
                 OutlinedTextField(
                     value = query,
                     onValueChange = { query = it },
@@ -56,19 +154,55 @@ fun RoutingScreen(viewModel: MeshDebugViewModel) {
 
                 Spacer(Modifier.height(12.dp))
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Button(
-                        onClick = {
-                            if (query.isNotBlank()) viewModel.testRoute(query)
-                        },
-                        enabled = query.isNotBlank() && !isLoading,
-                        colors = ButtonDefaults.buttonColors(containerColor = ButtonGreen)
-                    ) {
-                        Text("Route", fontWeight = FontWeight.SemiBold)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Route test (dry run) — always available
+                    if (mode == 0) {
+                        Button(
+                            onClick = {
+                                if (query.isNotBlank()) viewModel.testRoute(query)
+                            },
+                            enabled = query.isNotBlank() && !isLoading,
+                            colors = ButtonDefaults.buttonColors(containerColor = ButtonGreen)
+                        ) {
+                            Text("Route Test", fontWeight = FontWeight.SemiBold)
+                        }
                     }
 
-                    if (isLoading) {
-                        Spacer(Modifier.width(12.dp))
+                    // Execute button — actually sends the request
+                    Button(
+                        onClick = {
+                            if (query.isNotBlank() && atmosphereViewModel != null) {
+                                isExecuting = true
+                                lastResponse = null
+                                lastError = null
+                                val targetId = if (mode == 1) selectedTarget else null
+                                atmosphereViewModel.sendUserMessage(
+                                    content = query,
+                                    target = targetId
+                                ) { response, error ->
+                                    isExecuting = false
+                                    lastResponse = response
+                                    lastError = error
+                                }
+                            }
+                        },
+                        enabled = query.isNotBlank() && !isExecuting &&
+                                atmosphereViewModel != null &&
+                                (mode == 0 || selectedTarget != null),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (mode == 1) AccentOrange else AccentBlue
+                        )
+                    ) {
+                        Text(
+                            if (mode == 0) "Route & Execute" else "Execute on Target",
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    if (isLoading || isExecuting) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(16.dp),
                             strokeWidth = 2.dp,
@@ -77,17 +211,53 @@ fun RoutingScreen(viewModel: MeshDebugViewModel) {
                     }
                 }
 
-                // Show latest result
+                // Show execution response
+                if (lastResponse != null || lastError != null) {
+                    Spacer(Modifier.height(16.dp))
+                    HorizontalDivider(color = BorderSubtle)
+                    Spacer(Modifier.height(12.dp))
+
+                    Text(
+                        "EXECUTION RESULT",
+                        color = TextMuted,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(Modifier.height(8.dp))
+
+                    if (lastError != null) {
+                        Text(
+                            "Error: $lastError",
+                            color = StatusRed,
+                            fontSize = 13.sp
+                        )
+                    }
+
+                    lastResponse?.let { resp ->
+                        Text(
+                            resp,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 12.sp,
+                            color = TextPrimary,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(DashboardBackground, RoundedCornerShape(6.dp))
+                                .padding(8.dp)
+                        )
+                    }
+                }
+
+                // Show latest route test result
                 history.firstOrNull()?.let { latest ->
                     Spacer(Modifier.height(16.dp))
                     HorizontalDivider(color = BorderSubtle)
                     Spacer(Modifier.height(12.dp))
 
                     if (latest.error != null) {
-                        Text("Error: ${latest.error}", color = StatusRed, fontSize = 13.sp)
+                        Text("Route Error: ${latest.error}", color = StatusRed, fontSize = 13.sp)
                     } else {
                         latest.result?.let { r ->
-                            Text("ROUTING RESULT", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            Text("ROUTE TEST RESULT", color = TextMuted, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
                             Spacer(Modifier.height(8.dp))
 
                             r.target?.let { StatRow("Target", it) }

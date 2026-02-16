@@ -19,6 +19,7 @@ import com.llamafarm.atmosphere.capabilities.CameraCapability
 import com.llamafarm.atmosphere.capabilities.VoiceCapability
 import com.llamafarm.atmosphere.capabilities.MeshCapabilityHandler
 import com.llamafarm.atmosphere.cost.CostBroadcaster
+import com.llamafarm.atmosphere.core.CapabilityAnnouncement
 import com.llamafarm.atmosphere.cost.CostCollector
 import com.llamafarm.atmosphere.cost.CostFactors
 import com.llamafarm.atmosphere.data.AtmospherePreferences
@@ -529,9 +530,24 @@ class AtmosphereService : Service() {
      * @param onResponse Callback with (content, error)
      * @return Request ID or null if not connected
      */
+    /**
+     * Send a chat request through the mesh for LLM inference.
+     *
+     * Routing modes (mirrors desktop /v1/chat/completions):
+     *   1. target != null → Direct routing: bypass semantic router, send to specific capability
+     *   2. target == null, model == "auto" → Full semantic routing: pick best capability anywhere
+     *   3. target == null, model != "auto" → Model-filtered routing: semantic route but prefer specific model
+     *
+     * @param messages List of message maps with "role" and "content" keys
+     * @param model Model name, "auto" for automatic, or "local" for force-local
+     * @param target Direct capability ID (e.g. "local:llama-3.2-1b:default") — bypasses routing
+     * @param onResponse Callback with (content, error)
+     * @return Request ID or null if not connected
+     */
     fun sendChatRequest(
         messages: List<Map<String, String>>,
         model: String = "auto",
+        target: String? = null,
         onResponse: (content: String?, error: String?) -> Unit
     ): String? {
         // Generate request ID
@@ -551,22 +567,48 @@ class AtmosphereService : Service() {
                     return@launch
                 }
                 
-                // Get semantic router
+                // MODE 1: Direct target — bypass semantic router entirely
+                if (target != null) {
+                    Log.i(TAG, "🎯 Direct target mode: $target")
+                    val gossip = com.llamafarm.atmosphere.core.GossipManager.getInstance(applicationContext)
+                    val targetCap = gossip.getAllCapabilities().find { it.capabilityId == target }
+                    
+                    if (targetCap == null) {
+                        Log.w(TAG, "Target capability not found: $target")
+                        pendingRequests.remove(requestId)
+                        onResponse(null, "Target capability not found: $target")
+                        return@launch
+                    }
+                    
+                    addMeshEvent(MeshEvent(
+                        type = "route",
+                        title = "Direct → ${targetCap.label}",
+                        detail = "target=$target on ${targetCap.nodeName}",
+                        nodeId = targetCap.nodeId
+                    ))
+                    
+                    routeToCapability(requestId, targetCap, messages, model, onResponse)
+                    return@launch
+                }
+                
+                // MODE 2/3: Semantic routing (full or model-filtered)
                 val router = semanticRouter ?: SemanticRouter.getInstance(applicationContext).also {
                     semanticRouter = it
                 }
                 
-                // Route based on the user's query
+                // Build constraints — model="local" forces local-only
+                val constraints = when {
+                    model == "local" -> RouteConstraints(maxLatencyMs = 5000f, preferLocal = true)
+                    else -> RouteConstraints(maxLatencyMs = 5000f, preferLocal = false)
+                }
+                
                 val decision = router.route(
                     query = lastUserMessage,
-                    constraints = RouteConstraints(
-                        maxLatencyMs = 5000f,
-                        preferLocal = false
-                    )
+                    constraints = constraints
                 )
                 
                 if (decision == null) {
-                    Log.w(TAG, "No capability found for chat request")
+                    Log.w(TAG, "No capability found for chat request (model=$model)")
                     addMeshEvent(MeshEvent(
                         type = "route",
                         title = "No Route Found",
@@ -585,18 +627,7 @@ class AtmosphereService : Service() {
                     nodeId = decision.capability.nodeId
                 ))
                 
-                // Check if local or remote
-                val localNodeId = _nodeId.value
-                if (decision.capability.nodeId == localNodeId || decision.capability.hops == 0) {
-                    // Execute locally (convert messages to single prompt)
-                    val prompt = messages.joinToString("\n") { msg ->
-                        "${msg["role"]}: ${msg["content"]}"
-                    }
-                    executeLocalInference(requestId, prompt, onResponse)
-                } else {
-                    // Send to remote node
-                    sendRemoteChatRequest(requestId, decision.capability.nodeId, messages, model, onResponse)
-                }
+                routeToCapability(requestId, decision.capability, messages, model, onResponse)
                 
             } catch (e: Exception) {
                 Log.e(TAG, "Error in sendChatRequest", e)
@@ -606,6 +637,29 @@ class AtmosphereService : Service() {
         }
         
         return requestId
+    }
+    
+    /**
+     * Route to a specific capability — local or remote.
+     */
+    private suspend fun routeToCapability(
+        requestId: String,
+        capability: CapabilityAnnouncement,
+        messages: List<Map<String, String>>,
+        model: String,
+        onResponse: (String?, String?) -> Unit
+    ) {
+        val localNodeId = _nodeId.value
+        val isLocal = capability.nodeId == localNodeId || capability.hops == 0
+        
+        if (isLocal) {
+            val prompt = messages.joinToString("\n") { msg ->
+                "${msg["role"]}: ${msg["content"]}"
+            }
+            executeLocalInference(requestId, prompt, onResponse)
+        } else {
+            sendRemoteChatRequest(requestId, capability.nodeId, messages, model, onResponse)
+        }
     }
     
     /**

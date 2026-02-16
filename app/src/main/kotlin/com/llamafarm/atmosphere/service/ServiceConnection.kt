@@ -256,6 +256,7 @@ class ServiceConnector(private val context: Context) {
     fun sendChatRequest(
         messages: List<Map<String, String>>,
         model: String = "auto",
+        target: String? = null,
         onResponse: (content: String?, error: String?) -> Unit
     ): String? {
         val svc = service
@@ -263,7 +264,7 @@ class ServiceConnector(private val context: Context) {
             onResponse(null, "Service not bound")
             return null
         }
-        return svc.sendChatRequest(messages, model, onResponse)
+        return svc.sendChatRequest(messages, model, target, onResponse)
     }
     
     /**

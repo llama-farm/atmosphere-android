@@ -196,6 +196,10 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
     private val _gossipStats = MutableStateFlow<Map<String, Any>>(emptyMap())
     val gossipStats: StateFlow<Map<String, Any>> = _gossipStats.asStateFlow()
     
+    /** LLM-capable entries from gossip table (for routing UI target selection) */
+    private val _llmCapabilities = MutableStateFlow<List<com.llamafarm.atmosphere.core.CapabilityAnnouncement>>(emptyList())
+    val llmCapabilities: StateFlow<List<com.llamafarm.atmosphere.core.CapabilityAnnouncement>> = _llmCapabilities.asStateFlow()
+    
     // Saved mesh info for UI display (MUST be before init block!)
     private val _savedMeshName = MutableStateFlow<String?>(null)
     val savedMeshName: StateFlow<String?> = _savedMeshName.asStateFlow()
@@ -269,6 +273,17 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
                 val newStats = gossipManager.getStats()
                 Log.d(TAG, "📊 Gossip stats update: ${newStats["total_capabilities"]} caps")
                 _gossipStats.value = newStats
+                
+                // Update LLM capabilities list for routing UI
+                val allCaps = gossipManager.getAllCapabilities()
+                _llmCapabilities.value = allCaps.filter { cap ->
+                    cap.capabilityType == com.llamafarm.atmosphere.core.CapabilityType.LLM_CHAT ||
+                    cap.capabilityType == com.llamafarm.atmosphere.core.CapabilityType.LLM_COMPLETE ||
+                    cap.capabilityType == com.llamafarm.atmosphere.core.CapabilityType.LLM_EMBED ||
+                    cap.capabilityId.startsWith("local:llama") ||
+                    cap.capabilityId.startsWith("local:embedding") ||
+                    cap.capabilityId.startsWith("llamafarm:")
+                }
             }
         }
         
@@ -959,9 +974,18 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
      * @param model Optional model name ("auto" for automatic selection)
      * @param onResponse Callback with (content, error)
      */
+    /**
+     * Send a chat message with full routing control.
+     *
+     * @param messages Chat messages
+     * @param model "auto" (semantic routing), "local" (force local), or specific model name
+     * @param target Direct capability ID — bypasses semantic routing entirely
+     * @param onResponse Callback with (content, error)
+     */
     fun sendChatMessage(
         messages: List<Map<String, String>>,
         model: String = "auto",
+        target: String? = null,
         onResponse: (content: String?, error: String?) -> Unit
     ) {
         val connector = serviceConnector
@@ -969,7 +993,7 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
             onResponse(null, "Service not available")
             return
         }
-        connector.sendChatRequest(messages, model, onResponse)
+        connector.sendChatRequest(messages, model, target, onResponse)
     }
     
     /**
@@ -977,11 +1001,13 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
      * 
      * @param content The user's message content
      * @param systemPrompt Optional system prompt
+     * @param target Direct capability ID for targeted routing (null = semantic routing)
      * @param onResponse Callback with (content, error)
      */
     fun sendUserMessage(
         content: String,
         systemPrompt: String? = null,
+        target: String? = null,
         onResponse: (content: String?, error: String?) -> Unit
     ) {
         val messages = mutableListOf<Map<String, String>>()
@@ -989,7 +1015,7 @@ class AtmosphereViewModel(application: Application) : AndroidViewModel(applicati
             messages.add(mapOf("role" to "system", "content" to it))
         }
         messages.add(mapOf("role" to "user", "content" to content))
-        sendChatMessage(messages, "auto", onResponse)
+        sendChatMessage(messages, "auto", target, onResponse)
     }
     
     /**
