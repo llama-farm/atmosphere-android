@@ -536,6 +536,22 @@ class BleTransportManager(
                         }
                         
                         Log.i(TAG, "GATT service discovered and configured for $peerId")
+
+                        // Send hello with our Atmosphere peer ID so the remote GATT server
+                        // can map our Bluetooth device ID to our real peer ID
+                        scope.launch {
+                            delay(500) // Wait for descriptor write to complete
+                            val hello = """{"type":"hello","peer_id":"${this@BleTransportManager.peerId}","app_id":"atmosphere"}"""
+                            txCharacteristic?.let { tx ->
+                                try {
+                                    tx.value = hello.toByteArray(Charsets.UTF_8)
+                                    gatt.writeCharacteristic(tx)
+                                    Log.i(TAG, "Sent BLE hello with peer_id=${this@BleTransportManager.peerId}")
+                                } catch (e: SecurityException) {
+                                    Log.e(TAG, "Failed to send BLE hello: ${e.message}")
+                                }
+                            }
+                        }
                     } else {
                         Log.e(TAG, "Atmosphere service not found on peer $peerId")
                     }
