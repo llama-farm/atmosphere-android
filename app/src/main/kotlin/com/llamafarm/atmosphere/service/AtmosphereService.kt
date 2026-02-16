@@ -109,6 +109,43 @@ class AtmosphereService : Service() {
     fun getNodeId(): String? = _nodeId.value
     fun getMeshId(): String = "atmosphere-playground-mesh-v1" // Hardcoded for now
     fun getAtmosphereHandle(): Long = atmosphereHandle
+    
+    /**
+     * Get real-time transport statuses for UI display.
+     * Returns a map of transport name → status string (active/idle/error/unavailable).
+     */
+    fun getTransportStatuses(): Map<String, String> {
+        val statuses = mutableMapOf<String, String>()
+        
+        // LAN: active if we have peers, idle if core is running but no peers
+        statuses["lan"] = when {
+            atmosphereHandle == 0L -> "unavailable"
+            getPeerCount() > 0 -> "active"
+            else -> "idle"
+        }
+        
+        // BLE: check actual BleTransportManager state
+        statuses["ble"] = when {
+            bleTransport == null -> "unavailable"
+            bleTransport?.isRunning?.value == true -> "active"
+            bleTransport?.isAvailable?.value == true -> "idle"
+            else -> "error"
+        }
+        
+        // P2P WiFi: check WifiAwareManager state
+        statuses["p2p"] = when {
+            android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O -> "unavailable"
+            wifiAwareTransport == null -> "unavailable"
+            wifiAwareTransport?.isSessionActive?.value == true -> "active"
+            wifiAwareTransport?.isAvailable?.value == true -> "idle"
+            else -> "error"
+        }
+        
+        // WebSocket: currently not implemented (relay removed), show unavailable
+        statuses["ws"] = "unavailable"
+        
+        return statuses
+    }
     fun getCrdtPeerCount(): Int = getPeerCount()
     fun getServiceUptimeSeconds(): Long = if (serviceStartTime > 0) (System.currentTimeMillis() - serviceStartTime) / 1000 else 0L
     

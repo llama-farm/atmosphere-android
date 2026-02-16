@@ -29,7 +29,7 @@ data class MeshHealth(
     val peerCount: Int,
     val capabilityCount: Int,
     val uptimeSeconds: Long,
-    val transports: Map<String, Boolean>,
+    val transports: Map<String, String>,
     val raw: JSONObject
 )
 
@@ -273,8 +273,15 @@ class MeshApiClient(
     private fun fetchHealth() {
         val json = getJson("/health") ?: run { _health.value = null; return }
         val transportsJson = json.optJSONObject("transports") ?: JSONObject()
-        val transports = mutableMapOf<String, Boolean>()
-        transportsJson.keys().forEach { transports[it] = transportsJson.optBoolean(it, false) }
+        val transports = mutableMapOf<String, String>()
+        transportsJson.keys().forEach { key ->
+            val value = transportsJson.opt(key)
+            transports[key] = when (value) {
+                is Boolean -> if (value) "active" else "unavailable"
+                is String -> value
+                else -> "unavailable"
+            }
+        }
 
         _health.value = MeshHealth(
             status = json.optString("status", "unknown"),

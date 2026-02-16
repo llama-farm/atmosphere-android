@@ -25,12 +25,26 @@ import com.llamafarm.atmosphere.ui.theme.*
 // ============================================================================
 @Composable
 fun TransportDot(active: Boolean, label: String, modifier: Modifier = Modifier) {
+    TransportDot(status = if (active) "active" else "unavailable", label = label, modifier = modifier)
+}
+
+/**
+ * Transport status dot with 4 states: active (green), idle (yellow), error (red), unavailable (gray).
+ */
+@Composable
+fun TransportDot(status: String, label: String, modifier: Modifier = Modifier) {
+    val dotColor = when (status) {
+        "active" -> TransportActive
+        "idle" -> TransportIdle
+        "error" -> TransportError
+        else -> TransportOff
+    }
     Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier) {
         Box(
             modifier = Modifier
                 .size(8.dp)
                 .clip(CircleShape)
-                .background(if (active) TransportActive else TransportOff)
+                .background(dotColor)
         )
         Spacer(Modifier.width(6.dp))
         Text(label, style = MaterialTheme.typography.labelSmall, color = TextSecondary)

@@ -52,10 +52,10 @@ fun DashboardScreen(viewModel: MeshDebugViewModel) {
             Spacer(Modifier.height(4.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 val transports = h?.transports ?: emptyMap()
-                TransportDot(transports["lan"] == true || connected, "LAN")
-                TransportDot(transports["ble"] == true, "BLE")
-                TransportDot(transports["websocket"] == true || transports["ws"] == true, "WS")
-                TransportDot(transports["wifi_direct"] == true || transports["p2p"] == true, "P2P")
+                TransportDot(status = transports["lan"] ?: if (connected) "active" else "unavailable", label = "LAN")
+                TransportDot(status = transports["ble"] ?: "unavailable", label = "BLE")
+                TransportDot(status = transports["ws"] ?: "unavailable", label = "WS")
+                TransportDot(status = transports["p2p"] ?: "unavailable", label = "P2P")
             }
         }
 

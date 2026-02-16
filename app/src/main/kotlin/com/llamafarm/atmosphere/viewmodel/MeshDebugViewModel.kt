@@ -306,6 +306,15 @@ class MeshDebugViewModel(application: Application) : AndroidViewModel(applicatio
             val uptimeSeconds = obj.optLong("uptime_secs", 0).let { uptime ->
                 if (uptime == 0L) serviceUptime else uptime
             }
+            
+            // Query real transport statuses from the service
+            val transportStatuses = try {
+                val svc = com.llamafarm.atmosphere.service.ServiceManager.getConnector().getService()
+                svc?.getTransportStatuses() ?: mapOf("lan" to "idle")
+            } catch (e: Exception) {
+                mapOf("lan" to "idle")
+            }
+            
             MeshHealth(
                 status = obj.optString("status", "unknown"),
                 peerId = obj.optString("peer_id", ""),
@@ -315,7 +324,7 @@ class MeshDebugViewModel(application: Application) : AndroidViewModel(applicatio
                 peerCount = obj.optInt("peer_count", 0),
                 capabilityCount = obj.optInt("capability_count", 0),
                 uptimeSeconds = uptimeSeconds,
-                transports = mapOf("lan" to true),
+                transports = transportStatuses,
                 raw = obj
             )
         } catch (e: Exception) {

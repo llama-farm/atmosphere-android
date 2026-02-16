@@ -40,6 +40,8 @@ val StatusGrayBg = Color(0x206E7681)
 
 // Transport dot
 val TransportActive = Color(0xFF238636)
+val TransportIdle = Color(0xFFD29922)
+val TransportError = Color(0xFFDA3633)
 val TransportOff = Color(0xFF6E7681)
 
 // Button
