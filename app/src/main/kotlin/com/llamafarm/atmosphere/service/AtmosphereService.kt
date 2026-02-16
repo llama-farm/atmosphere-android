@@ -128,7 +128,8 @@ class AtmosphereService : Service() {
                         put(key, inner?.optString("status", "idle") ?: "idle")
                     }
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
+                // Catches both Exception and UnsatisfiedLinkError (JNI not in .so yet)
                 Log.w(TAG, "Failed to get Rust transport statuses: ${e.message}")
                 emptyMap()
             }
