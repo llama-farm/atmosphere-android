@@ -104,7 +104,9 @@ class ServiceConnector(private val context: Context) {
             return true
         }
         
-        val intent = Intent(context, AtmosphereService::class.java)
+        val intent = Intent(context, AtmosphereService::class.java).apply {
+            action = AtmosphereService.ACTION_START
+        }
         
         // First, ensure the service is started (for foreground service persistence)
         context.startForegroundService(intent)

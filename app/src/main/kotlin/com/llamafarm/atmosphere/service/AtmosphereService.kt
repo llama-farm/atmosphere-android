@@ -347,7 +347,7 @@ class AtmosphereService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> startNode()
+            ACTION_START, null -> startNode()  // null = first start via bindService
             ACTION_STOP -> stopNode()
             else -> Log.w(TAG, "Unknown action: ${intent?.action}")
         }
