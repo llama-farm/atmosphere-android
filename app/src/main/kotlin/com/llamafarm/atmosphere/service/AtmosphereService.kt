@@ -1236,10 +1236,17 @@ class AtmosphereService : Service() {
                                 @Suppress("UNCHECKED_CAST")
                                 val llm = (doc["llm"] as? Map<String, Any>) ?: emptyMap()
                                 
-                                val name = llm["description"]?.toString()?.take(30)
+                                val rawId = doc["_id"]?.toString() ?: ""
+                                val name = llm["description"]?.toString()?.take(50)
                                     ?: doc["name"]?.toString()
-                                    ?: doc["_id"]?.toString()?.substringAfterLast(":")
-                                    ?: "unknown"
+                                    ?: if (rawId.startsWith("discoverable:")) {
+                                        // "discoverable:code-assistant:default" → "code-assistant (default)"
+                                        val parts = rawId.split(":")
+                                        if (parts.size >= 3) "${parts[1]} (${parts[2]})" else rawId
+                                    } else if (rawId.contains(":")) {
+                                        // "llamafarm:model:variant" → show meaningful part
+                                        rawId.substringAfter(":").take(40)
+                                    } else rawId.ifEmpty { "unknown" }
                                 val desc = llm["description"]?.toString() ?: doc["description"]?.toString() ?: ""
                                 val capId = doc["_id"]?.toString() ?: "$peerIdVal:$name"
                                 val now = System.currentTimeMillis()
@@ -1306,11 +1313,33 @@ class AtmosphereService : Service() {
                                 val reqId = doc.optString("request_id", "")
                                 if (reqId.isEmpty()) continue
                                 val callback = pendingRequests.remove(reqId) ?: continue
-                                val content = doc.optString("content", null)
-                                val status = doc["status"]?.toString() ?: "unknown"
-                                Log.i(TAG, "📥 CRDT response for $reqId: status=$status, content=${content?.take(50)}")
+                                val status = doc.optString("status", "unknown")
+                                
+                                // Extract content from response — Mac writes full chat completion in "response" field
+                                val content = when {
+                                    doc.has("content") -> doc.optString("content", null)
+                                    doc.has("response") -> {
+                                        val resp = doc.opt("response")
+                                        when (resp) {
+                                            is JSONObject -> {
+                                                // Full chat completion: {choices: [{message: {content: "..."}}]}
+                                                resp.optJSONArray("choices")
+                                                    ?.optJSONObject(0)
+                                                    ?.optJSONObject("message")
+                                                    ?.optString("content", null)
+                                                    ?: resp.toString()
+                                            }
+                                            is String -> resp
+                                            else -> resp?.toString()
+                                        }
+                                    }
+                                    else -> null
+                                }
+                                
+                                Log.i(TAG, "📥 CRDT response for $reqId: status=$status, content=${content?.take(80)}")
                                 if (status == "error") {
-                                    callback(null, content ?: "Unknown error")
+                                    val error = doc.optString("error", content ?: "Unknown error")
+                                    callback(null, error)
                                 } else {
                                     callback(content, null)
                                 }
