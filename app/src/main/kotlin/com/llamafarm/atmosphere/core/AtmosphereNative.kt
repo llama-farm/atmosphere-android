@@ -96,6 +96,15 @@ object AtmosphereNative {
     external fun health(handle: Long): String
 
     /**
+     * Get transport statuses from Rust core.
+     * Returns JSON object with status of each transport (lan, websocket, ble, p2p_wifi).
+     *
+     * @param handle Handle returned from init()
+     * @return JSON string with transport statuses
+     */
+    external fun getTransportStatuses(handle: Long): String
+
+    /**
      * Initialize the text embedder with model files.
      * 
      * @param modelsDir Path to directory containing model.onnx and tokenizer.json

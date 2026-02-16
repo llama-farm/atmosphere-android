@@ -117,34 +117,74 @@ class AtmosphereService : Service() {
     fun getTransportStatuses(): Map<String, String> {
         val statuses = mutableMapOf<String, String>()
         
-        // LAN: active if we have peers, idle if core is running but no peers
-        statuses["lan"] = when {
+        // Get Rust core transport statuses (includes WebSocket relay state)
+        val rustStatuses = if (atmosphereHandle != 0L) {
+            try {
+                val json = AtmosphereNative.getTransportStatuses(atmosphereHandle)
+                val obj = JSONObject(json)
+                buildMap<String, String> {
+                    obj.keys().forEach { key ->
+                        val inner = obj.optJSONObject(key)
+                        put(key, inner?.optString("status", "idle") ?: "idle")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to get Rust transport statuses: ${e.message}")
+                emptyMap()
+            }
+        } else {
+            emptyMap()
+        }
+        
+        // LAN: prefer Rust core status, fallback to peer count heuristic
+        statuses["lan"] = rustStatuses["lan"] ?: when {
             atmosphereHandle == 0L -> "unavailable"
             getPeerCount() > 0 -> "active"
             else -> "idle"
         }
         
-        // BLE: check actual BleTransportManager state
-        statuses["ble"] = when {
+        // WebSocket: from Rust core (it manages the relay connection)
+        statuses["ws"] = rustStatuses["websocket"] ?: "unavailable"
+        
+        // BLE: merge Rust + Kotlin states (Kotlin manages GATT server/scanner)
+        val rustBle = rustStatuses["ble"]
+        val kotlinBle = when {
             bleTransport == null -> "unavailable"
             bleTransport?.isRunning?.value == true -> "active"
             bleTransport?.isAvailable?.value == true -> "idle"
             else -> "error"
         }
+        // Use the "most active" status: active > idle > error > unavailable
+        statuses["ble"] = pickBestStatus(rustBle, kotlinBle)
         
-        // P2P WiFi: check WifiAwareManager state
-        statuses["p2p"] = when {
+        // P2P WiFi: merge Rust + Kotlin states (Kotlin manages Wi-Fi Aware)
+        val rustP2p = rustStatuses["p2p_wifi"]
+        val kotlinP2p = when {
             android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.O -> "unavailable"
             wifiAwareTransport == null -> "unavailable"
             wifiAwareTransport?.isSessionActive?.value == true -> "active"
             wifiAwareTransport?.isAvailable?.value == true -> "idle"
             else -> "error"
         }
-        
-        // WebSocket: currently not implemented (relay removed), show unavailable
-        statuses["ws"] = "unavailable"
+        statuses["p2p"] = pickBestStatus(rustP2p, kotlinP2p)
         
         return statuses
+    }
+    
+    /**
+     * Pick the "best" (most active) transport status from two sources.
+     * Priority: active/connected > idle/connecting > error > unavailable > null
+     */
+    private fun pickBestStatus(a: String?, b: String?): String {
+        val priority = mapOf(
+            "active" to 4, "connected" to 4,
+            "idle" to 2, "connecting" to 3,
+            "error" to 1,
+            "unavailable" to 0
+        )
+        val pa = priority[a] ?: -1
+        val pb = priority[b] ?: -1
+        return if (pa >= pb) (a ?: b ?: "unavailable") else (b ?: a ?: "unavailable")
     }
     fun getCrdtPeerCount(): Int = getPeerCount()
     fun getServiceUptimeSeconds(): Long = if (serviceStartTime > 0) (System.currentTimeMillis() - serviceStartTime) / 1000 else 0L
