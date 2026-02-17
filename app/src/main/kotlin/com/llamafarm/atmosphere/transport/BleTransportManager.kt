@@ -330,19 +330,12 @@ class BleTransportManager(
                 .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
                 .build()
             
-            // Use multiple filters: service UUID (Android peers) + device name (macOS peers
-            // where CoreBluetooth doesn't include service UUID in advertisement data).
-            // Android BLE scan with multiple filters uses OR logic — matches either.
-            val uuidFilter = ScanFilter.Builder()
-                .setServiceUuid(ParcelUuid(SERVICE_UUID))
-                .build()
-            val nameFilter = ScanFilter.Builder()
-                .setDeviceName("Atmosphere")
-                .build()
+            // Scan without filters — CoreBluetooth on macOS doesn't reliably include
+            // service UUID or device name in advertisement data. We validate the service
+            // after connecting (in onServicesDiscovered).
+            bleScanner?.startScan(null, settings, scanCallback)
             
-            bleScanner?.startScan(listOf(uuidFilter, nameFilter), settings, scanCallback)
-            
-            Log.i(TAG, "BLE scan filters: serviceUuid=$SERVICE_UUID, deviceName=Atmosphere")
+            Log.i(TAG, "BLE scan started (no filter — validate service after connect)")
             
             Log.i(TAG, "BLE scanning started")
         } catch (e: SecurityException) {
@@ -362,8 +355,17 @@ class BleTransportManager(
                 return
             }
             
+            // Without service UUID filter, validate the scan result:
+            // Accept if service UUID matches OR device name is "Atmosphere"
+            val hasServiceUuid = result.scanRecord?.serviceUuids?.any { it.uuid == SERVICE_UUID } == true
+            val hasName = result.scanRecord?.deviceName == "Atmosphere" ||
+                          (try { device.name } catch (_: SecurityException) { null }) == "Atmosphere"
+            if (!hasServiceUuid && !hasName) {
+                return // Not an Atmosphere peer
+            }
+            
             if (!discoveredPeers.containsKey(address) && !outboundConnections.containsKey(address)) {
-                Log.i(TAG, "Discovered Atmosphere BLE peer: $address")
+                Log.i(TAG, "Discovered Atmosphere BLE peer: $address (uuid=$hasServiceUuid, name=$hasName)")
                 discoveredPeers[address] = device
                 
                 // Notify Rust JNI of discovered peer
