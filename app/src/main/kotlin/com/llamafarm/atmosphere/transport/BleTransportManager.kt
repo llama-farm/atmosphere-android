@@ -330,11 +330,19 @@ class BleTransportManager(
                 .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
                 .build()
             
-            val filter = ScanFilter.Builder()
+            // Use multiple filters: service UUID (Android peers) + device name (macOS peers
+            // where CoreBluetooth doesn't include service UUID in advertisement data).
+            // Android BLE scan with multiple filters uses OR logic — matches either.
+            val uuidFilter = ScanFilter.Builder()
                 .setServiceUuid(ParcelUuid(SERVICE_UUID))
                 .build()
+            val nameFilter = ScanFilter.Builder()
+                .setDeviceName("Atmosphere")
+                .build()
             
-            bleScanner?.startScan(listOf(filter), settings, scanCallback)
+            bleScanner?.startScan(listOf(uuidFilter, nameFilter), settings, scanCallback)
+            
+            Log.i(TAG, "BLE scan filters: serviceUuid=$SERVICE_UUID, deviceName=Atmosphere")
             
             Log.i(TAG, "BLE scanning started")
         } catch (e: SecurityException) {
