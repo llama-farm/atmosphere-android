@@ -76,6 +76,9 @@ class BleTransportManager(
     // Fragment reassembly buffers per peer
     private val reassemblyBuffers = ConcurrentHashMap<String, ReassemblyBuffer>()
     
+    // Map BLE device address → Atmosphere peer ID (resolved after hello/peer_info exchange)
+    private val deviceToAtmoPeerId = ConcurrentHashMap<String, String>()
+    
     // Sequence number for sending fragments
     private var sendSequence: UShort = 0u
     
@@ -501,13 +504,16 @@ class BleTransportManager(
      */
     private fun startOutgoingPollLoop() {
         scope.launch {
+            Log.i(TAG, "📤 Starting outgoing BLE poll loop")
             while (isRunning.value) {
                 // Poll outgoing for all connected peers (outbound connections)
                 for ((deviceId, conn) in outboundConnections) {
+                    // Use Atmosphere peer_id if known, fall back to device address
+                    val atmoPeerId = deviceToAtmoPeerId[deviceId] ?: deviceId
                     try {
-                        val data = AtmosphereNative.blePollOutgoing(atmosphereHandle, deviceId)
+                        val data = AtmosphereNative.blePollOutgoing(atmosphereHandle, atmoPeerId)
                         if (data != null && data.isNotEmpty()) {
-                            Log.d(TAG, "Outgoing BLE data for $deviceId: ${data.size} bytes")
+                            Log.i(TAG, "📤 Outgoing BLE data for $atmoPeerId ($deviceId): ${data.size} bytes")
                             val fragments = fragmentMessage(data)
                             for (fragment in fragments) {
                                 conn.sendData(fragment)
@@ -515,7 +521,7 @@ class BleTransportManager(
                             }
                         }
                     } catch (e: Throwable) {
-                        Log.w(TAG, "blePollOutgoing failed for $deviceId: ${e.message}")
+                        Log.w(TAG, "blePollOutgoing failed for $atmoPeerId: ${e.message}")
                     }
                 }
                 delay(50) // Poll every 50ms
@@ -641,6 +647,8 @@ class BleTransportManager(
                         val remotePeerId = peerInfo.optString("peer_id", "")
                         if (remotePeerId.isNotEmpty()) {
                             Log.i(TAG, "Remote peer ID: $remotePeerId (device: $peerId)")
+                            // Store device→peer mapping for outgoing poll loop
+                            deviceToAtmoPeerId[peerId] = remotePeerId
                             // Re-register with real peer ID
                             try {
                                 AtmosphereNative.blePeerAccepted(atmosphereHandle, remotePeerId, peerId)
