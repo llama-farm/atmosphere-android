@@ -653,37 +653,44 @@ class BleTransportManager(
                         }
                         
                         Log.i(TAG, "GATT service discovered and configured for $peerId")
-                        
-                        // Read peer info to get the real Atmosphere peer ID
-                        val peerInfoChar = service.getCharacteristic(PEER_INFO_CHAR_UUID)
-                        if (peerInfoChar != null) {
-                            try {
-                                gatt.readCharacteristic(peerInfoChar)
-                            } catch (e: SecurityException) {
-                                Log.w(TAG, "Failed to read peer info: ${e.message}")
-                            }
-                        }
 
-                        // Send hello with our Atmosphere peer ID so the remote GATT server
-                        // can map our Bluetooth device ID to our real peer ID
+                        // Sequence BLE GATT operations: descriptor write → hello → read peer info
+                        // BLE only allows one outstanding GATT operation at a time
                         scope.launch {
                             delay(500) // Wait for descriptor write to complete
+                            
+                            // Step 1: Send hello with our peer ID
                             val hello = """{"type":"hello","peer_id":"${this@BleTransportManager.peerId}","app_id":"atmosphere"}"""
                             txCharacteristic?.let { tx ->
                                 try {
                                     tx.value = hello.toByteArray(Charsets.UTF_8)
                                     gatt.writeCharacteristic(tx)
                                     Log.i(TAG, "Sent BLE hello with peer_id=${this@BleTransportManager.peerId}")
-                                    
-                                    // Notify Rust JNI that this peer is accepted (handshake sent)
-                                    try {
-                                        AtmosphereNative.blePeerAccepted(atmosphereHandle, peerId, peerId)
-                                    } catch (e: Throwable) {
-                                        Log.w(TAG, "blePeerAccepted JNI not available: ${e.message}")
-                                    }
                                 } catch (e: SecurityException) {
                                     Log.e(TAG, "Failed to send BLE hello: ${e.message}")
                                 }
+                            }
+                            
+                            delay(500) // Wait for hello write to complete
+                            
+                            // Step 2: Read remote peer info to get their Atmosphere peer ID
+                            val peerInfoChar = service.getCharacteristic(PEER_INFO_CHAR_UUID)
+                            if (peerInfoChar != null) {
+                                try {
+                                    Log.i(TAG, "Reading peer info from $peerId...")
+                                    gatt.readCharacteristic(peerInfoChar)
+                                } catch (e: SecurityException) {
+                                    Log.w(TAG, "Failed to read peer info: ${e.message}")
+                                }
+                            }
+                            
+                            // Register with device address initially; will be re-registered
+                            // with real Atmosphere peer_id when onCharacteristicRead fires
+                            try {
+                                AtmosphereNative.blePeerAccepted(atmosphereHandle, peerId, peerId)
+                                Log.i(TAG, "Registered BLE peer $peerId (pending real peer_id from PeerInfo)")
+                            } catch (e: Throwable) {
+                                Log.w(TAG, "blePeerAccepted JNI not available: ${e.message}")
                             }
                         }
                     } else {
