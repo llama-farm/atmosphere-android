@@ -671,14 +671,15 @@ class BleTransportManager(
                                 }
                             }
                             
-                            delay(500) // Wait for hello write to complete
+                            delay(1000) // Wait for hello write callback to complete
                             
                             // Step 2: Read remote peer info to get their Atmosphere peer ID
                             val peerInfoChar = service.getCharacteristic(PEER_INFO_CHAR_UUID)
                             if (peerInfoChar != null) {
                                 try {
                                     Log.i(TAG, "Reading peer info from $peerId...")
-                                    gatt.readCharacteristic(peerInfoChar)
+                                    val readOk = gatt.readCharacteristic(peerInfoChar)
+                                    Log.i(TAG, "readCharacteristic returned: $readOk")
                                 } catch (e: SecurityException) {
                                     Log.w(TAG, "Failed to read peer info: ${e.message}")
                                 }
@@ -700,6 +701,7 @@ class BleTransportManager(
             }
             
             override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+                Log.i(TAG, "onCharacteristicRead: uuid=${characteristic.uuid}, status=$status, value=${characteristic.value?.size ?: 0} bytes")
                 if (status == BluetoothGatt.GATT_SUCCESS && characteristic.uuid == PEER_INFO_CHAR_UUID) {
                     try {
                         val peerInfoJson = String(characteristic.value, Charsets.UTF_8)
