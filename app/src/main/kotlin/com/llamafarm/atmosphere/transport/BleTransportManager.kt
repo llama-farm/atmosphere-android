@@ -215,6 +215,14 @@ class BleTransportManager(
                     Log.i(TAG, "Central connected: ${device.address}")
                     val connection = GattClientConnection(device)
                     connectedCentrals[device] = connection
+                    
+                    // Register central as a BLE peer in Rust JNI so outgoing data can flow
+                    try {
+                        AtmosphereNative.blePeerAccepted(atmosphereHandle, device.address, device.address)
+                        Log.i(TAG, "Registered central ${device.address} as BLE peer in Rust")
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "blePeerAccepted JNI not available for central: ${e.message}")
+                    }
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     Log.i(TAG, "Central disconnected: ${device.address}")
@@ -512,13 +520,28 @@ class BleTransportManager(
      * Start polling Rust for outgoing BLE data.
      * Runs a coroutine that checks each connected peer for pending data.
      */
+    /**
+     * Send data to a connected central via GATT server notifications on RX characteristic.
+     */
+    private fun sendToConnectedCentral(device: BluetoothDevice, data: ByteArray) {
+        val server = gattServer ?: return
+        val service = server.getService(SERVICE_UUID) ?: return
+        val rxChar = service.getCharacteristic(RX_CHAR_UUID) ?: return
+        
+        try {
+            rxChar.value = data
+            server.notifyCharacteristicChanged(device, rxChar, false)
+        } catch (e: SecurityException) {
+            Log.w(TAG, "Failed to notify central ${device.address}: ${e.message}")
+        }
+    }
+    
     private fun startOutgoingPollLoop() {
         scope.launch {
             Log.i(TAG, "📤 Starting outgoing BLE poll loop")
             while (isRunning.value) {
-                // Poll outgoing for all connected peers (outbound connections)
+                // Poll outgoing for all connected peers (outbound GATT client connections)
                 for ((deviceId, conn) in outboundConnections) {
-                    // Use Atmosphere peer_id if known, fall back to device address
                     val atmoPeerId = deviceToAtmoPeerId[deviceId] ?: deviceId
                     try {
                         val data = AtmosphereNative.blePollOutgoing(atmosphereHandle, atmoPeerId)
@@ -534,6 +557,26 @@ class BleTransportManager(
                         Log.w(TAG, "blePollOutgoing failed for $atmoPeerId: ${e.message}")
                     }
                 }
+                
+                // Poll outgoing for connected centrals (GATT server → notify)
+                for ((device, _) in connectedCentrals) {
+                    val deviceId = device.address
+                    val atmoPeerId = deviceToAtmoPeerId[deviceId] ?: deviceId
+                    try {
+                        val data = AtmosphereNative.blePollOutgoing(atmosphereHandle, atmoPeerId)
+                        if (data != null && data.isNotEmpty()) {
+                            Log.i(TAG, "📤 Outgoing BLE data (server notify) for $atmoPeerId ($deviceId): ${data.size} bytes")
+                            val fragments = fragmentMessage(data)
+                            for (fragment in fragments) {
+                                sendToConnectedCentral(device, fragment)
+                                delay(10)
+                            }
+                        }
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "blePollOutgoing (central) failed for $atmoPeerId: ${e.message}")
+                    }
+                }
+                
                 delay(50) // Poll every 50ms
             }
         }
