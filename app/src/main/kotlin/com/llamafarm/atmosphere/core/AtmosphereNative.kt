@@ -193,4 +193,40 @@ object AtmosphereNative {
      * @return true if send was queued successfully
      */
     external fun bleSendData(handle: Long, peerId: String, data: ByteArray): Boolean
+
+    /**
+     * Poll for outgoing BLE data to send to a peer.
+     * Kotlin calls this periodically to get data the Rust side wants to send over BLE.
+     * 
+     * @param handle Handle returned from init()
+     * @param peerId Peer ID to poll for
+     * @return Data bytes to send, or null if nothing pending
+     */
+    external fun blePollOutgoing(handle: Long, peerId: String): ByteArray?
+
+    /**
+     * Notify Rust that a BLE peer was discovered via scanning.
+     * 
+     * @param handle Handle returned from init()
+     * @param peerId Atmosphere peer ID
+     * @param deviceId BLE device address
+     */
+    external fun blePeerDiscovered(handle: Long, peerId: String, deviceId: String)
+
+    /**
+     * Notify Rust that a BLE peer was lost/disconnected.
+     * 
+     * @param handle Handle returned from init()
+     * @param peerId Atmosphere peer ID
+     */
+    external fun blePeerLost(handle: Long, peerId: String)
+
+    /**
+     * Notify Rust that a BLE peer completed hello handshake (accepted).
+     * 
+     * @param handle Handle returned from init()
+     * @param peerId Atmosphere peer ID
+     * @param deviceId BLE device address
+     */
+    external fun blePeerAccepted(handle: Long, peerId: String, deviceId: String)
 }

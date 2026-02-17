@@ -138,6 +138,7 @@ class BleTransportManager(
         startScanning()
         
         _isRunning.value = true
+        startOutgoingPollLoop()
         
         Log.i(TAG, "BLE transport started")
     }
@@ -354,6 +355,13 @@ class BleTransportManager(
                 Log.i(TAG, "Discovered Atmosphere BLE peer: $address")
                 discoveredPeers[address] = device
                 
+                // Notify Rust JNI of discovered peer
+                try {
+                    AtmosphereNative.blePeerDiscovered(atmosphereHandle, address, address)
+                } catch (e: Throwable) {
+                    Log.w(TAG, "blePeerDiscovered JNI not available: ${e.message}")
+                }
+                
                 // Auto-connect if under connection limit
                 if (outboundConnections.size < MAX_CONNECTIONS) {
                     connectToPeer(device)
@@ -488,6 +496,34 @@ class BleTransportManager(
     }
     
     /**
+     * Start polling Rust for outgoing BLE data.
+     * Runs a coroutine that checks each connected peer for pending data.
+     */
+    private fun startOutgoingPollLoop() {
+        scope.launch {
+            while (isRunning.value) {
+                // Poll outgoing for all connected peers (outbound connections)
+                for ((deviceId, conn) in outboundConnections) {
+                    try {
+                        val data = AtmosphereNative.blePollOutgoing(atmosphereHandle, deviceId)
+                        if (data != null && data.isNotEmpty()) {
+                            Log.d(TAG, "Outgoing BLE data for $deviceId: ${data.size} bytes")
+                            val fragments = fragmentMessage(data)
+                            for (fragment in fragments) {
+                                conn.sendData(fragment)
+                                delay(10)
+                            }
+                        }
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "blePollOutgoing failed for $deviceId: ${e.message}")
+                    }
+                }
+                delay(50) // Poll every 50ms
+            }
+        }
+    }
+
+    /**
      * Stop BLE transport.
      */
     fun stop() {
@@ -558,6 +594,16 @@ class BleTransportManager(
                         }
                         
                         Log.i(TAG, "GATT service discovered and configured for $peerId")
+                        
+                        // Read peer info to get the real Atmosphere peer ID
+                        val peerInfoChar = service.getCharacteristic(PEER_INFO_CHAR_UUID)
+                        if (peerInfoChar != null) {
+                            try {
+                                gatt.readCharacteristic(peerInfoChar)
+                            } catch (e: SecurityException) {
+                                Log.w(TAG, "Failed to read peer info: ${e.message}")
+                            }
+                        }
 
                         // Send hello with our Atmosphere peer ID so the remote GATT server
                         // can map our Bluetooth device ID to our real peer ID
@@ -569,6 +615,13 @@ class BleTransportManager(
                                     tx.value = hello.toByteArray(Charsets.UTF_8)
                                     gatt.writeCharacteristic(tx)
                                     Log.i(TAG, "Sent BLE hello with peer_id=${this@BleTransportManager.peerId}")
+                                    
+                                    // Notify Rust JNI that this peer is accepted (handshake sent)
+                                    try {
+                                        AtmosphereNative.blePeerAccepted(atmosphereHandle, peerId, peerId)
+                                    } catch (e: Throwable) {
+                                        Log.w(TAG, "blePeerAccepted JNI not available: ${e.message}")
+                                    }
                                 } catch (e: SecurityException) {
                                     Log.e(TAG, "Failed to send BLE hello: ${e.message}")
                                 }
@@ -576,6 +629,27 @@ class BleTransportManager(
                         }
                     } else {
                         Log.e(TAG, "Atmosphere service not found on peer $peerId")
+                    }
+                }
+            }
+            
+            override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+                if (status == BluetoothGatt.GATT_SUCCESS && characteristic.uuid == PEER_INFO_CHAR_UUID) {
+                    try {
+                        val peerInfoJson = String(characteristic.value, Charsets.UTF_8)
+                        val peerInfo = org.json.JSONObject(peerInfoJson)
+                        val remotePeerId = peerInfo.optString("peer_id", "")
+                        if (remotePeerId.isNotEmpty()) {
+                            Log.i(TAG, "Remote peer ID: $remotePeerId (device: $peerId)")
+                            // Re-register with real peer ID
+                            try {
+                                AtmosphereNative.blePeerAccepted(atmosphereHandle, remotePeerId, peerId)
+                            } catch (e: Throwable) {
+                                Log.w(TAG, "blePeerAccepted JNI not available: ${e.message}")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to parse peer info: ${e.message}")
                     }
                 }
             }
