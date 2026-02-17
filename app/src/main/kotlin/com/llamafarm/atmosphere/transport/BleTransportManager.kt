@@ -411,6 +411,20 @@ class BleTransportManager(
         if (completeData != null) {
             Log.i(TAG, "Reassembled complete message from $peerId: ${completeData.size} bytes")
             
+            // Keepalive ping/pong intercept: 32-byte messages starting with APIN/APON
+            if (completeData.size == 32 && isKeepalivePing(completeData)) {
+                Log.d(TAG, "Keepalive ping from $peerId, sending pong")
+                val pong = completeData.copyOf()
+                // Replace APIN (0x4150494E) with APON (0x41504F4E)
+                pong[0] = 0x41; pong[1] = 0x50; pong[2] = 0x4F; pong[3] = 0x4E
+                sendToPeer(peerId, pong)
+                return
+            }
+            if (completeData.size == 32 && isKeepalivePong(completeData)) {
+                Log.d(TAG, "Keepalive pong from $peerId (ignored)")
+                return
+            }
+            
             // Notify Rust core
             scope.launch {
                 try {
@@ -422,6 +436,14 @@ class BleTransportManager(
         }
     }
     
+    /** Check if data starts with APIN magic (0x4150494E) */
+    private fun isKeepalivePing(data: ByteArray): Boolean =
+        data[0] == 0x41.toByte() && data[1] == 0x50.toByte() && data[2] == 0x49.toByte() && data[3] == 0x4E.toByte()
+
+    /** Check if data starts with APON magic (0x41504F4E) */
+    private fun isKeepalivePong(data: ByteArray): Boolean =
+        data[0] == 0x41.toByte() && data[1] == 0x50.toByte() && data[2] == 0x4F.toByte() && data[3] == 0x4E.toByte()
+
     /**
      * Send data to a peer (fragments if needed).
      */

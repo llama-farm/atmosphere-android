@@ -260,6 +260,23 @@ class WifiAwareManager(
      * Handle incoming message from peer.
      */
     private fun handleIncomingMessage(peerHandle: PeerHandle, message: ByteArray) {
+        // Keepalive ping/pong intercept: 32-byte messages starting with APIN/APON
+        if (message.size == 32 && message[0] == 0x41.toByte() && message[1] == 0x50.toByte()) {
+            if (message[2] == 0x49.toByte() && message[3] == 0x4E.toByte()) {
+                // APIN ping - reply with APON pong
+                Log.d(TAG, "Keepalive ping from $peerHandle, sending pong")
+                val pong = message.copyOf()
+                pong[2] = 0x4F.toByte()  // I -> O
+                sendMessage(peerHandle, pong)
+                return
+            }
+            if (message[2] == 0x4F.toByte() && message[3] == 0x4E.toByte()) {
+                // APON pong - ignore
+                Log.d(TAG, "Keepalive pong from $peerHandle (ignored)")
+                return
+            }
+        }
+
         scope.launch {
             try {
                 val peerId = peerHandle.toString()
