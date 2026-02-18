@@ -658,6 +658,99 @@ class AtmosphereClient private constructor(
         }
     }
     
+    // ========================== Streaming API ==========================
+    
+    /**
+     * Open a direct binary stream to a remote peer.
+     * Used for video, model transfer, drone telemetry — bypasses CRDT sync.
+     * 
+     * @param peerId Target peer ID
+     * @param channel Stream channel name (e.g., "video:front", "inference", "telemetry")
+     * @return StreamInfo with stream_id and local data port
+     */
+    suspend fun openStream(peerId: String, channel: String): StreamInfo = withContext(Dispatchers.IO) {
+        val service = connector.getService()
+            ?: throw AtmosphereNotConnectedException()
+        
+        try {
+            val responseJson = service.openStream(peerId, channel)
+            val json = JSONObject(responseJson)
+            
+            if (json.has("error")) {
+                StreamInfo(
+                    streamId = -1,
+                    error = json.optString("error")
+                )
+            } else {
+                StreamInfo(
+                    streamId = json.optInt("stream_id", -1),
+                    peerId = json.optString("peer_id"),
+                    channel = json.optString("channel"),
+                    localPort = json.optInt("local_port", 0)
+                )
+            }
+        } catch (e: RemoteException) {
+            Log.e(TAG, "Remote exception in openStream()", e)
+            StreamInfo(streamId = -1, error = "Connection lost: ${e.message}")
+        }
+    }
+    
+    /**
+     * Close a binary stream.
+     * @param streamId The stream ID from openStream()
+     */
+    suspend fun closeStream(streamId: Int): Unit = withContext(Dispatchers.IO) {
+        val service = connector.getService() ?: return@withContext
+        try {
+            service.closeStream(streamId)
+        } catch (e: RemoteException) {
+            Log.e(TAG, "Remote exception in closeStream()", e)
+        }
+    }
+    
+    /**
+     * List active binary streams.
+     * @return List of active stream info objects
+     */
+    suspend fun listStreams(): List<StreamInfo> = withContext(Dispatchers.IO) {
+        val service = connector.getService()
+            ?: throw AtmosphereNotConnectedException()
+        
+        try {
+            val responseJson = service.listStreams()
+            val arr = JSONArray(responseJson)
+            val streams = mutableListOf<StreamInfo>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                streams.add(StreamInfo(
+                    streamId = obj.optInt("stream_id", -1),
+                    peerId = obj.optString("peer_id"),
+                    channel = obj.optString("channel"),
+                    closed = obj.optBoolean("closed", false)
+                ))
+            }
+            streams
+        } catch (e: RemoteException) {
+            Log.e(TAG, "Remote exception in listStreams()", e)
+            emptyList()
+        }
+    }
+    
+    /**
+     * Get the local TCP port for binary stream data.
+     * Connect to localhost:{port}, send "STREAM {stream_id}\n", then send/receive binary frames.
+     * Returns 0 if local TCP streaming not available (use AIDL sendStreamData/recvStreamData instead).
+     */
+    suspend fun getStreamPort(): Int = withContext(Dispatchers.IO) {
+        val service = connector.getService() ?: return@withContext 0
+        try {
+            service.getStreamPort()
+        } catch (e: RemoteException) {
+            Log.e(TAG, "Remote exception in getStreamPort()", e)
+            0
+        }
+    }
+    
     // ========================== Mesh App / Tool API ==========================
     
     /**
@@ -1456,6 +1549,17 @@ data class VisionStatus(
 // ============================================================================
 // Mesh App Data Classes
 // ============================================================================
+
+data class StreamInfo(
+    val streamId: Int,
+    val peerId: String? = null,
+    val channel: String? = null,
+    val localPort: Int = 0,
+    val closed: Boolean = false,
+    val error: String? = null
+) {
+    val isValid: Boolean get() = streamId >= 0 && error == null
+}
 
 data class MeshApp(
     val name: String,
