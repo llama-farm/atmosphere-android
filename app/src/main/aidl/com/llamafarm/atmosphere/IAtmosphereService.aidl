@@ -249,6 +249,39 @@ interface IAtmosphereService {
      */
     String callTool(String appName, String toolName, String paramsJson);
 
+    // ========================== Streaming API ==========================
+    
+    /**
+     * Open a direct binary stream to a remote peer.
+     * Returns a stream ID. Use the local stream socket (localhost:11463)
+     * to send/receive binary data on this stream.
+     * 
+     * @param peerId Target peer ID
+     * @param channel Stream channel name (e.g., "video:front", "inference", "model:transfer")
+     * @return JSON with stream_id, local_port for data socket
+     */
+    String openStream(String peerId, String channel);
+    
+    /**
+     * Close a stream.
+     * @param streamId The stream ID returned by openStream
+     */
+    void closeStream(int streamId);
+    
+    /**
+     * List active streams.
+     * @return JSON array of stream info objects
+     */
+    String listStreams();
+    
+    /**
+     * Get the local stream data port.
+     * Connect a TCP socket to localhost:{port} for binary streaming.
+     * Protocol: first send "STREAM {stream_id}\n", then binary frames flow.
+     * @return The local TCP port for stream data
+     */
+    int getStreamPort();
+
     // ========================== CRDT Data Sync API ==========================
 
     /** Insert a document into a CRDT collection. Returns doc ID. */
