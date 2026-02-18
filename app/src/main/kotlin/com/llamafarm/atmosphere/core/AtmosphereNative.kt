@@ -230,4 +230,35 @@ object AtmosphereNative {
      * @param deviceId BLE device address
      */
     external fun blePeerAccepted(handle: Long, peerId: String, deviceId: String)
+
+    // ==================== Streaming API ====================
+
+    /**
+     * Open a direct binary stream to a remote peer.
+     * @return JSON with stream_id, peer_id, channel
+     */
+    external fun openStream(handle: Long, peerId: String, channel: String): String
+
+    /**
+     * Close a stream.
+     */
+    external fun closeStream(handle: Long, streamId: Int)
+
+    /**
+     * Send data on a stream.
+     * @return true on success
+     */
+    external fun streamSend(handle: Long, streamId: Int, data: ByteArray): Boolean
+
+    /**
+     * Receive data from a stream (100ms timeout).
+     * @return data bytes or null if no data/stream closed
+     */
+    external fun streamRecv(handle: Long, streamId: Int): ByteArray?
+
+    /**
+     * List active streams.
+     * @return JSON array of stream info
+     */
+    external fun listStreams(handle: Long): String
 }

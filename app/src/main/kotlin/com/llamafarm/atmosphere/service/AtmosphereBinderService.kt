@@ -964,6 +964,54 @@ class AtmosphereBinderService : Service() {
             }
         }
         
+        // ========================== Streaming API Implementation ==========================
+
+        override fun openStream(peerId: String?, channel: String?): String {
+            Log.d(TAG, "openStream() called: peer=$peerId channel=$channel")
+            if (peerId.isNullOrBlank() || channel.isNullOrBlank()) {
+                return """{"error":"peer_id and channel required"}"""
+            }
+            val service = com.llamafarm.atmosphere.service.ServiceManager.getConnector().getService() ?: return """{"error":"service not connected"}"""
+            val handle = service.getAtmosphereHandle()
+            if (handle == 0L) return """{"error":"mesh not started"}"""
+            return try {
+                com.llamafarm.atmosphere.core.AtmosphereNative.openStream(handle, peerId, channel)
+            } catch (e: Throwable) {
+                Log.e(TAG, "openStream failed", e)
+                """{"error":"${e.message}"}"""
+            }
+        }
+
+        override fun closeStream(streamId: Int) {
+            Log.d(TAG, "closeStream() called: id=$streamId")
+            val service = com.llamafarm.atmosphere.service.ServiceManager.getConnector().getService() ?: return
+            val handle = service.getAtmosphereHandle()
+            if (handle == 0L) return
+            try {
+                com.llamafarm.atmosphere.core.AtmosphereNative.closeStream(handle, streamId)
+            } catch (e: Throwable) {
+                Log.e(TAG, "closeStream failed", e)
+            }
+        }
+
+        override fun listStreams(): String {
+            val service = com.llamafarm.atmosphere.service.ServiceManager.getConnector().getService() ?: return "[]"
+            val handle = service.getAtmosphereHandle()
+            if (handle == 0L) return "[]"
+            return try {
+                com.llamafarm.atmosphere.core.AtmosphereNative.listStreams(handle)
+            } catch (e: Throwable) {
+                Log.e(TAG, "listStreams failed", e)
+                "[]"
+            }
+        }
+
+        override fun getStreamPort(): Int {
+            // Stream data port — apps connect TCP to localhost:{port}
+            // for binary streaming. Not yet implemented on Android (uses JNI directly).
+            return 0
+        }
+
         // ========================== CRDT Data Sync API Implementation ==========================
         
         override fun crdtInsert(collection: String?, docJson: String?): String? {
