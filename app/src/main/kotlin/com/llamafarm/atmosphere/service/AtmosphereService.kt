@@ -824,6 +824,14 @@ class AtmosphereService : Service() {
                     
                     AtmosphereNative.insert(atmosphereHandle, "_requests", requestId, requestDoc.toString())
                     Log.i(TAG, "🔮 CRDT request inserted: $requestId")
+                    
+                    // Timeout: if no response within 30s, resolve with error
+                    delay(30_000)
+                    val callback = pendingRequests.remove(requestId)
+                    if (callback != null) {
+                        Log.w(TAG, "🔮 CRDT inference request timed out: $requestId")
+                        callback(null, "Request timed out (30s) — no response from mesh peer $targetNodeId")
+                    }
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to insert CRDT request", e)
                     pendingRequests.remove(requestId)
@@ -886,6 +894,14 @@ class AtmosphereService : Service() {
                 
                 AtmosphereNative.insert(atmosphereHandle, "_requests", requestId, requestDoc.toString())
                 Log.i(TAG, "🔮 CRDT chat request inserted: $requestId")
+                
+                // Timeout: if no response within 30s, resolve with error
+                delay(30_000)
+                val callback = pendingRequests.remove(requestId)
+                if (callback != null) {
+                    Log.w(TAG, "🔮 CRDT chat request timed out: $requestId")
+                    callback(null, "Request timed out (30s) — no response from mesh peer $targetNodeId")
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to insert CRDT chat request", e)
                 pendingRequests.remove(requestId)
