@@ -53,6 +53,8 @@ class WifiAwareManager(
 
     // Discovered peers: PeerHandle → PeerDiscoveryInfo
     private val discoveredPeers = mutableMapOf<PeerHandle, PeerDiscoveryInfo>()
+    // Track which discovery session found each peer (for sendMessage routing)
+    private val peerDiscoverySource = mutableMapOf<PeerHandle, DiscoverySession>()
 
     // Accepted peers: PeerHandle → Atmosphere peer_id (after hello handshake)
     private val acceptedPeers = mutableMapOf<PeerHandle, String>()
@@ -147,6 +149,10 @@ class WifiAwareManager(
                 publishDiscoverySession = session
             }
             override fun onMessageReceived(peerHandle: PeerHandle, message: ByteArray) {
+                // Track peers that message us via publish
+                if (!peerDiscoverySource.containsKey(peerHandle)) {
+                    publishDiscoverySession?.let { peerDiscoverySource[peerHandle] = it }
+                }
                 handleIncomingMessage(peerHandle, message)
             }
             override fun onSessionTerminated() {
@@ -173,10 +179,15 @@ class WifiAwareManager(
                 serviceSpecificInfo: ByteArray,
                 matchFilter: List<ByteArray>
             ) {
-                Log.i(TAG, "Discovered Wi-Fi Aware peer: $peerHandle")
+                Log.i(TAG, "Discovered Wi-Fi Aware peer via subscribe: $peerHandle")
+                peerDiscoverySource[peerHandle] = subscribeDiscoverySession ?: return
                 handlePeerDiscovered(peerHandle, serviceSpecificInfo)
             }
             override fun onMessageReceived(peerHandle: PeerHandle, message: ByteArray) {
+                // Track peers that message us via subscribe
+                if (!peerDiscoverySource.containsKey(peerHandle)) {
+                    subscribeDiscoverySession?.let { peerDiscoverySource[peerHandle] = it }
+                }
                 handleIncomingMessage(peerHandle, message)
             }
             override fun onSessionTerminated() {
@@ -373,9 +384,12 @@ class WifiAwareManager(
     }
 
     private fun sendRawMessage(peerHandle: PeerHandle, data: ByteArray) {
-        val session = publishDiscoverySession ?: subscribeDiscoverySession
+        // Use the session that discovered/received from this peer
+        val session = peerDiscoverySource[peerHandle]
+            ?: publishDiscoverySession
+            ?: subscribeDiscoverySession
         if (session == null) {
-            Log.e(TAG, "No active session to send message")
+            Log.e(TAG, "No active session to send message to $peerHandle")
             return
         }
         session.sendMessage(peerHandle, 0, data)
@@ -428,6 +442,7 @@ class WifiAwareManager(
 
         acceptedPeers.clear()
         peerHandleByAtmoId.clear()
+        peerDiscoverySource.clear()
         reassemblyBuffers.clear()
         reassemblyTotals.clear()
         discoveredPeers.clear()
