@@ -688,6 +688,12 @@ class BleTransportManager(
         
         // Write completion gate — only one outstanding GATT write at a time
         private var writeCompletion: kotlinx.coroutines.CompletableDeferred<Boolean>? = null
+        
+        // Descriptor write completion gate  
+        private var descriptorWriteComplete: kotlinx.coroutines.CompletableDeferred<Boolean>? = null
+        
+        // Gate: don't send data until GATT setup (descriptor write + hello + peer info) is complete
+        @Volatile var readyToSend = false
         var negotiatedMtu: Int = 23  // default BLE MTU
         
         val gattCallback = object : BluetoothGattCallback() {
@@ -717,58 +723,67 @@ class BleTransportManager(
                         txCharacteristic = service.getCharacteristic(TX_CHAR_UUID)
                         rxCharacteristic = service.getCharacteristic(RX_CHAR_UUID)
                         
-                        // Subscribe to RX notifications
-                        rxCharacteristic?.let { rx ->
-                            try {
-                                gatt.setCharacteristicNotification(rx, true)
-                                val descriptor = rx.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
-                                descriptor?.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                                gatt.writeDescriptor(descriptor)
-                            } catch (e: SecurityException) {
-                                Log.e(TAG, "Failed to subscribe to notifications: missing permissions", e)
-                            }
-                        }
-                        
-                        Log.i(TAG, "GATT service discovered and configured for $peerId")
+                        Log.i(TAG, "GATT service discovered for $peerId — starting setup sequence")
 
-                        // Sequence BLE GATT operations: descriptor write → hello → read peer info
-                        // BLE only allows one outstanding GATT operation at a time
+                        // Sequence GATT operations using callbacks (no delays!)
+                        // Each step waits for the previous callback before proceeding
                         scope.launch {
-                            delay(500) // Wait for descriptor write to complete
+                            // Step 1: Subscribe to RX notifications (writeDescriptor)
+                            rxCharacteristic?.let { rx ->
+                                try {
+                                    gatt.setCharacteristicNotification(rx, true)
+                                    val descriptor = rx.getDescriptor(UUID.fromString("00002902-0000-1000-8000-00805f9b34fb"))
+                                    descriptorWriteComplete = kotlinx.coroutines.CompletableDeferred()
+                                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                                        gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                                    } else {
+                                        @Suppress("DEPRECATION")
+                                        descriptor?.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                                        @Suppress("DEPRECATION")
+                                        gatt.writeDescriptor(descriptor)
+                                    }
+                                    // Wait for onDescriptorWrite callback (max 3s)
+                                    kotlinx.coroutines.withTimeoutOrNull(3000) { descriptorWriteComplete?.await() }
+                                    Log.i(TAG, "Step 1/3: Descriptor write complete for $peerId")
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Step 1 failed: ${e.message}")
+                                }
+                            }
                             
-                            // Step 1: Send hello with our peer ID
+                            // Step 2: Send hello with our peer ID
                             val hello = """{"type":"hello","peer_id":"${this@BleTransportManager.peerId}","app_id":"atmosphere"}"""
                             txCharacteristic?.let { tx ->
                                 try {
-                                    tx.value = hello.toByteArray(Charsets.UTF_8)
-                                    gatt.writeCharacteristic(tx)
-                                    Log.i(TAG, "Sent BLE hello with peer_id=${this@BleTransportManager.peerId}")
-                                } catch (e: SecurityException) {
-                                    Log.e(TAG, "Failed to send BLE hello: ${e.message}")
+                                    writeCompletion = kotlinx.coroutines.CompletableDeferred()
+                                    val helloData = hello.toByteArray(Charsets.UTF_8)
+                                    val result = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                                        gatt.writeCharacteristic(tx, helloData, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
+                                    } else {
+                                        @Suppress("DEPRECATION")
+                                        tx.value = helloData
+                                        @Suppress("DEPRECATION")
+                                        gatt.writeCharacteristic(tx)
+                                    }
+                                    if (result) {
+                                        kotlinx.coroutines.withTimeoutOrNull(3000) { writeCompletion?.await() }
+                                        Log.i(TAG, "Step 2/3: Hello sent to $peerId")
+                                    } else {
+                                        Log.w(TAG, "Step 2/3: Hello write returned false for $peerId")
+                                    }
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Step 2 failed: ${e.message}")
                                 }
                             }
                             
-                            delay(1000) // Wait for hello write callback to complete
-                            
-                            // Step 2: Read remote peer info to get their Atmosphere peer ID
-                            val peerInfoChar = service.getCharacteristic(PEER_INFO_CHAR_UUID)
-                            if (peerInfoChar != null) {
-                                try {
-                                    Log.i(TAG, "Reading peer info from $peerId...")
-                                    val readOk = gatt.readCharacteristic(peerInfoChar)
-                                    Log.i(TAG, "readCharacteristic returned: $readOk")
-                                } catch (e: SecurityException) {
-                                    Log.w(TAG, "Failed to read peer info: ${e.message}")
-                                }
-                            }
-                            
-                            // Register with device address initially; will be re-registered
-                            // with real Atmosphere peer_id when onCharacteristicRead fires
+                            // Step 3: Register peer (skip readCharacteristic — it fails on Android↔Android)
                             try {
                                 AtmosphereNative.blePeerAccepted(atmosphereHandle, peerId, peerId)
-                                Log.i(TAG, "Registered BLE peer $peerId (pending real peer_id from PeerInfo)")
+                                Log.i(TAG, "Step 3/3: Registered BLE peer $peerId")
+                                readyToSend = true
+                                Log.i(TAG, "✅ GATT setup complete for $peerId — ready to send data")
                             } catch (e: Throwable) {
                                 Log.w(TAG, "blePeerAccepted JNI not available: ${e.message}")
+                                readyToSend = true
                             }
                         }
                     } else {
@@ -815,6 +830,10 @@ class BleTransportManager(
                 writeCompletion?.complete(status == BluetoothGatt.GATT_SUCCESS)
             }
             
+            override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+                descriptorWriteComplete?.complete(status == BluetoothGatt.GATT_SUCCESS)
+            }
+            
             override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
                 if (characteristic.uuid == RX_CHAR_UUID) {
                     val data = characteristic.value
@@ -825,12 +844,21 @@ class BleTransportManager(
         }
         
         suspend fun sendData(data: ByteArray) {
+            if (!readyToSend) {
+                Log.d(TAG, "Skipping send to $peerId — GATT setup not complete")
+                return
+            }
             txCharacteristic?.let { tx ->
-                tx.value = data
-                tx.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
                 try {
                     writeCompletion = kotlinx.coroutines.CompletableDeferred()
-                    val result = gatt?.writeCharacteristic(tx) ?: false
+                    val result = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                        // API 33+: use new writeCharacteristic(char, data, writeType) 
+                        gatt?.writeCharacteristic(tx, data, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothStatusCodes.SUCCESS
+                    } else {
+                        tx.value = data
+                        tx.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                        gatt?.writeCharacteristic(tx) ?: false
+                    }
                     if (!result) {
                         Log.w(TAG, "writeCharacteristic returned false for $peerId (${data.size} bytes)")
                     }
