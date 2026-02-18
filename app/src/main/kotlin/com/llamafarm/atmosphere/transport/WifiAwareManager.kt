@@ -3,10 +3,6 @@ package com.llamafarm.atmosphere.transport
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
-import android.net.NetworkSpecifier
 import android.net.wifi.aware.*
 import android.os.Build
 import android.util.Log
@@ -14,30 +10,28 @@ import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
 import com.llamafarm.atmosphere.core.AtmosphereNative
 import kotlinx.coroutines.*
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import java.io.InputStream
-import java.io.OutputStream
-import java.net.ServerSocket
-import java.net.Socket
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
-import kotlin.coroutines.suspendCoroutine
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 private const val TAG = "WifiAwareManager"
 
+// Fragment header: 8 bytes = seq(4) + idx(2) + total(2)
+private const val FRAG_HEADER_SIZE = 8
+// Wi-Fi Aware sendMessage max payload is 255 bytes
+private const val MAX_MESSAGE_SIZE = 255
+private const val MAX_FRAG_PAYLOAD = MAX_MESSAGE_SIZE - FRAG_HEADER_SIZE  // 247 bytes per fragment
+
 /**
- * Wi-Fi Aware transport manager for Atmosphere mesh networking.
- * 
- * Implements peer discovery via publish/subscribe and data transfer
- * via Wi-Fi Aware Network Specifier + TCP sockets.
- * 
- * Requirements:
- * - Android 8.0 (API 26) or higher
- * - NEARBY_WIFI_DEVICES permission (API 33+)
- * - ACCESS_FINE_LOCATION permission
- * - Wi-Fi Aware hardware support
+ * Wi-Fi Aware transport for Atmosphere mesh networking.
+ *
+ * All data flows through the Rust multiplexer via JNI channels:
+ *   Incoming: onMessageReceived → reassemble fragments → wifiAwareDataReceived (JNI) → multiplexer
+ *   Outgoing: multiplexer → wifiAwarePollOutgoing (JNI) → fragment → sendMessage
+ *
+ * Hello handshake exchanges Atmosphere peer IDs over sendMessage before
+ * accepting the peer into the multiplexer via wifiAwarePeerAccepted.
  */
 @RequiresApi(Build.VERSION_CODES.O)
 class WifiAwareManager(
@@ -45,162 +39,135 @@ class WifiAwareManager(
     private val atmosphereHandle: Long
 ) {
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-    
+
     private var awareManager: android.net.wifi.aware.WifiAwareManager? = null
     private var wifiAwareSession: WifiAwareSession? = null
     private var publishDiscoverySession: PublishDiscoverySession? = null
     private var subscribeDiscoverySession: SubscribeDiscoverySession? = null
-    
-    private val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-    
+
     private val _isAvailable = MutableStateFlow(false)
     val isAvailable: StateFlow<Boolean> = _isAvailable
-    
+
     private val _isSessionActive = MutableStateFlow(false)
     val isSessionActive: StateFlow<Boolean> = _isSessionActive
-    
-    // Discovered peers: PeerHandle -> DiscoveryInfo
+
+    // Discovered peers: PeerHandle → PeerDiscoveryInfo
     private val discoveredPeers = mutableMapOf<PeerHandle, PeerDiscoveryInfo>()
-    
-    // Active connections: PeerId -> Connection
-    private val activeConnections = mutableMapOf<String, WifiAwareConnection>()
-    
-    // Service name for Atmosphere mesh
+
+    // Accepted peers: PeerHandle → Atmosphere peer_id (after hello handshake)
+    private val acceptedPeers = mutableMapOf<PeerHandle, String>()
+    // Reverse map: peer_id → PeerHandle (for outgoing poll)
+    private val peerHandleByAtmoId = mutableMapOf<String, PeerHandle>()
+
+    // Fragment reassembly: peerHandle → (seq → fragments[])
+    private val reassemblyBuffers = mutableMapOf<PeerHandle, MutableMap<Int, Array<ByteArray?>>>()
+    private val reassemblyTotals = mutableMapOf<PeerHandle, MutableMap<Int, Int>>()
+    private var nextSeq = 0
+
     private val serviceName = "atmosphere-mesh"
-    
-    // Match filter for discovering Atmosphere peers
     private val serviceSpecificInfo = "atmo".toByteArray()
-    
+
+    // Our local Atmosphere peer_id (read from JNI or set externally)
+    private var localPeerId: String = ""
+
     init {
         checkAvailability()
     }
-    
-    /**
-     * Check if Wi-Fi Aware is available and permissions are granted.
-     */
+
+    fun setLocalPeerId(peerId: String) {
+        localPeerId = peerId
+    }
+
     private fun checkAvailability() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             _isAvailable.value = false
             return
         }
-        
-        awareManager = context.getSystemService(Context.WIFI_AWARE_SERVICE) as? android.net.wifi.aware.WifiAwareManager
-        
+        awareManager = context.getSystemService(Context.WIFI_AWARE_SERVICE)
+            as? android.net.wifi.aware.WifiAwareManager
         val hasWifiAware = awareManager != null
         val hasPermissions = checkPermissions()
-        
         _isAvailable.value = hasWifiAware && hasPermissions
-        
         Log.i(TAG, "Wi-Fi Aware available: $hasWifiAware, permissions: $hasPermissions")
     }
-    
-    /**
-     * Check required permissions.
-     */
+
     private fun checkPermissions(): Boolean {
-        val locationPermission = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.ACCESS_FINE_LOCATION
+        val location = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
-        
-        val wifiPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val wifi = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.NEARBY_WIFI_DEVICES
+                context, Manifest.permission.NEARBY_WIFI_DEVICES
             ) == PackageManager.PERMISSION_GRANTED
-        } else {
-            true
-        }
-        
-        return locationPermission && wifiPermission
+        } else true
+        return location && wifi
     }
-    
-    /**
-     * Start Wi-Fi Aware session and begin discovery.
-     */
-    suspend fun start() = suspendCoroutine { continuation ->
+
+    // ========================================================================
+    // Session lifecycle
+    // ========================================================================
+
+    suspend fun start() = suspendCancellableCoroutine { continuation ->
         if (!_isAvailable.value) {
-            continuation.resumeWithException(
-                IllegalStateException("Wi-Fi Aware not available or permissions denied")
-            )
-            return@suspendCoroutine
+            continuation.resumeWith(Result.failure(
+                IllegalStateException("Wi-Fi Aware not available")
+            ))
+            return@suspendCancellableCoroutine
         }
-        
-        val attachCallback = object : AttachCallback() {
+
+        val cb = object : AttachCallback() {
             override fun onAttached(session: WifiAwareSession) {
                 Log.i(TAG, "Wi-Fi Aware session attached")
                 wifiAwareSession = session
                 _isSessionActive.value = true
-                
-                // Start both publish and subscribe for full mesh discovery
                 startPublish(session)
                 startSubscribe(session)
-                
-                continuation.resume(Unit)
+                continuation.resumeWith(Result.success(Unit))
             }
-            
+
             override fun onAttachFailed() {
                 Log.e(TAG, "Wi-Fi Aware attach failed")
                 _isSessionActive.value = false
-                continuation.resumeWithException(
-                    RuntimeException("Failed to attach Wi-Fi Aware session")
-                )
+                continuation.resumeWith(Result.failure(RuntimeException("Attach failed")))
             }
         }
-        
-        awareManager?.attach(attachCallback, null)
+        awareManager?.attach(cb, null)
     }
-    
-    /**
-     * Start publishing our presence to the mesh.
-     */
+
     private fun startPublish(session: WifiAwareSession) {
-        val publishConfig = PublishConfig.Builder()
+        val config = PublishConfig.Builder()
             .setServiceName(serviceName)
             .setServiceSpecificInfo(serviceSpecificInfo)
             .setTerminateNotificationEnabled(true)
             .build()
-        
-        val publishCallback = object : DiscoverySessionCallback() {
+
+        session.publish(config, object : DiscoverySessionCallback() {
             override fun onPublishStarted(session: PublishDiscoverySession) {
                 Log.i(TAG, "Wi-Fi Aware publish started")
                 publishDiscoverySession = session
             }
-            
             override fun onMessageReceived(peerHandle: PeerHandle, message: ByteArray) {
-                Log.d(TAG, "Received message from peer: ${message.decodeToString()}")
                 handleIncomingMessage(peerHandle, message)
             }
-            
-            override fun onSessionConfigFailed() {
-                Log.e(TAG, "Publish session config failed")
-            }
-            
             override fun onSessionTerminated() {
                 Log.w(TAG, "Publish session terminated")
                 publishDiscoverySession = null
             }
-        }
-        
-        session.publish(publishConfig, publishCallback, null)
+        }, null)
     }
-    
-    /**
-     * Start subscribing to discover other Atmosphere peers.
-     */
+
     private fun startSubscribe(session: WifiAwareSession) {
-        val subscribeConfig = SubscribeConfig.Builder()
+        val config = SubscribeConfig.Builder()
             .setServiceName(serviceName)
             .setServiceSpecificInfo(serviceSpecificInfo)
             .setTerminateNotificationEnabled(true)
             .build()
-        
-        val subscribeCallback = object : DiscoverySessionCallback() {
+
+        session.subscribe(config, object : DiscoverySessionCallback() {
             override fun onSubscribeStarted(session: SubscribeDiscoverySession) {
                 Log.i(TAG, "Wi-Fi Aware subscribe started")
                 subscribeDiscoverySession = session
             }
-            
             override fun onServiceDiscovered(
                 peerHandle: PeerHandle,
                 serviceSpecificInfo: ByteArray,
@@ -209,203 +176,271 @@ class WifiAwareManager(
                 Log.i(TAG, "Discovered Wi-Fi Aware peer: $peerHandle")
                 handlePeerDiscovered(peerHandle, serviceSpecificInfo)
             }
-            
             override fun onMessageReceived(peerHandle: PeerHandle, message: ByteArray) {
-                Log.d(TAG, "Received message from peer: ${message.decodeToString()}")
                 handleIncomingMessage(peerHandle, message)
             }
-            
-            override fun onSessionConfigFailed() {
-                Log.e(TAG, "Subscribe session config failed")
-            }
-            
             override fun onSessionTerminated() {
                 Log.w(TAG, "Subscribe session terminated")
                 subscribeDiscoverySession = null
             }
-        }
-        
-        session.subscribe(subscribeConfig, subscribeCallback, null)
+        }, null)
     }
-    
-    /**
-     * Handle peer discovery event.
-     */
+
+    // ========================================================================
+    // Peer discovery + hello handshake
+    // ========================================================================
+
     private fun handlePeerDiscovered(peerHandle: PeerHandle, serviceInfo: ByteArray) {
-        val peerInfo = PeerDiscoveryInfo(
+        discoveredPeers[peerHandle] = PeerDiscoveryInfo(
             peerHandle = peerHandle,
             serviceInfo = serviceInfo,
             discoveredAt = System.currentTimeMillis()
         )
-        
-        discoveredPeers[peerHandle] = peerInfo
-        
-        // Notify Rust core about discovered peer
+
+        // Notify Rust about discovery (adds to JniWifiAwareManager.peers)
         scope.launch {
             try {
                 AtmosphereNative.wifiAwarePeerDiscovered(
-                    atmosphereHandle,
-                    peerHandle.toString(),
-                    serviceInfo.decodeToString()
+                    atmosphereHandle, peerHandle.toString(), serviceInfo.decodeToString()
                 )
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to notify Rust core about peer discovery", e)
-            }
-        }
-        
-        Log.i(TAG, "Peer discovered: $peerHandle")
-    }
-    
-    /**
-     * Handle incoming message from peer.
-     */
-    private fun handleIncomingMessage(peerHandle: PeerHandle, message: ByteArray) {
-        // Keepalive ping/pong intercept: 32-byte messages starting with APIN/APON
-        if (message.size == 32 && message[0] == 0x41.toByte() && message[1] == 0x50.toByte()) {
-            if (message[2] == 0x49.toByte() && message[3] == 0x4E.toByte()) {
-                // APIN ping - reply with APON pong
-                Log.d(TAG, "Keepalive ping from $peerHandle, sending pong")
-                val pong = message.copyOf()
-                pong[2] = 0x4F.toByte()  // I -> O
-                sendMessage(peerHandle, pong)
-                return
-            }
-            if (message[2] == 0x4F.toByte() && message[3] == 0x4E.toByte()) {
-                // APON pong - ignore
-                Log.d(TAG, "Keepalive pong from $peerHandle (ignored)")
-                return
+            } catch (e: Throwable) {
+                Log.e(TAG, "Failed to notify Rust about peer discovery", e)
             }
         }
 
+        // Send hello to exchange Atmosphere peer IDs
+        sendHello(peerHandle)
+    }
+
+    private fun sendHello(peerHandle: PeerHandle) {
+        if (localPeerId.isEmpty()) {
+            Log.w(TAG, "Cannot send hello — localPeerId not set")
+            return
+        }
+        val hello = """{"type":"hello","peer_id":"$localPeerId","app_id":"atmosphere"}""".toByteArray()
+        sendRawMessage(peerHandle, hello)
+        Log.i(TAG, "Sent Wi-Fi Aware hello to $peerHandle (peer_id=$localPeerId)")
+    }
+
+    // ========================================================================
+    // Incoming message handling
+    // ========================================================================
+
+    private fun handleIncomingMessage(peerHandle: PeerHandle, message: ByteArray) {
+        // Keepalive ping/pong intercept: 32-byte APIN/APON
+        if (message.size == 32 && message[0] == 0x41.toByte() && message[1] == 0x50.toByte()) {
+            if (message[2] == 0x49.toByte() && message[3] == 0x4E.toByte()) {
+                Log.d(TAG, "Keepalive ping from $peerHandle, sending pong")
+                val pong = message.copyOf()
+                pong[2] = 0x4F.toByte()
+                sendRawMessage(peerHandle, pong)
+                return
+            }
+            if (message[2] == 0x4F.toByte() && message[3] == 0x4E.toByte()) {
+                return // pong — ignore
+            }
+        }
+
+        // Hello message detection (starts with '{')
+        if (message.isNotEmpty() && message[0] == '{'.code.toByte()) {
+            try {
+                val json = message.decodeToString()
+                if (json.contains("\"type\":\"hello\"")) {
+                    handleHello(peerHandle, json)
+                    return
+                }
+            } catch (_: Exception) {}
+        }
+
+        // Fragment: 8-byte header + payload
+        if (message.size >= FRAG_HEADER_SIZE) {
+            handleFragment(peerHandle, message)
+        }
+    }
+
+    private fun handleHello(peerHandle: PeerHandle, json: String) {
+        // Parse peer_id from hello JSON
+        val peerIdMatch = Regex("\"peer_id\":\"([^\"]+)\"").find(json)
+        val remotePeerId = peerIdMatch?.groupValues?.get(1) ?: peerHandle.toString()
+
+        Log.i(TAG, "Received Wi-Fi Aware hello from $peerHandle: peer_id=$remotePeerId")
+
+        // If we haven't sent hello yet, send one back
+        if (!acceptedPeers.containsKey(peerHandle)) {
+            sendHello(peerHandle)
+        }
+
+        // Register peer for data flow
+        acceptedPeers[peerHandle] = remotePeerId
+        peerHandleByAtmoId[remotePeerId] = peerHandle
+
+        // Accept into multiplexer via JNI
         scope.launch {
             try {
-                val peerId = peerHandle.toString()
-                AtmosphereNative.wifiAwareDataReceived(
-                    atmosphereHandle,
-                    peerId,
-                    message
+                AtmosphereNative.wifiAwarePeerAccepted(
+                    atmosphereHandle, remotePeerId, peerHandle.toString()
                 )
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to notify Rust core about received data", e)
+                Log.i(TAG, "✅ Wi-Fi Aware peer accepted into multiplexer: $remotePeerId")
+
+                // Start outgoing poll loop for this peer
+                startOutgoingPollLoop(remotePeerId, peerHandle)
+            } catch (e: Throwable) {
+                Log.e(TAG, "Failed to accept Wi-Fi Aware peer", e)
             }
         }
     }
-    
-    /**
-     * Connect to a discovered peer using Network Specifier.
-     */
-    suspend fun connectToPeer(peerHandle: PeerHandle, port: Int = 0): WifiAwareConnection? {
-        val session = subscribeDiscoverySession ?: publishDiscoverySession
-        if (session == null) {
-            Log.e(TAG, "No active discovery session")
-            return null
+
+    // ========================================================================
+    // Fragment reassembly (incoming)
+    // ========================================================================
+
+    private fun handleFragment(peerHandle: PeerHandle, message: ByteArray) {
+        val buf = ByteBuffer.wrap(message, 0, FRAG_HEADER_SIZE).order(ByteOrder.BIG_ENDIAN)
+        val seq = buf.getInt()
+        val idx = buf.getShort().toInt() and 0xFFFF
+        val total = buf.getShort().toInt() and 0xFFFF
+
+        if (total == 0 || idx >= total || total > 500) {
+            Log.w(TAG, "Invalid fragment header: seq=$seq idx=$idx total=$total")
+            return
         }
+
+        val payload = message.copyOfRange(FRAG_HEADER_SIZE, message.size)
+
+        val peerFrags = reassemblyBuffers.getOrPut(peerHandle) { mutableMapOf() }
+        val peerTotals = reassemblyTotals.getOrPut(peerHandle) { mutableMapOf() }
+
+        val frags = peerFrags.getOrPut(seq) { arrayOfNulls(total) }
+        peerTotals[seq] = total
         
-        return try {
-            createNetworkConnection(session, peerHandle, port)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to connect to peer", e)
-            null
+        if (idx < frags.size) {
+            frags[idx] = payload
+        }
+
+        // Check if all fragments received
+        val received = frags.count { it != null }
+        if (received == total) {
+            // Reassemble
+            val fullData = frags.filterNotNull().fold(ByteArray(0)) { acc, b -> acc + b }
+            peerFrags.remove(seq)
+            peerTotals.remove(seq)
+
+            val peerId = acceptedPeers[peerHandle] ?: peerHandle.toString()
+            Log.i(TAG, "Reassembled Wi-Fi Aware message from $peerId: ${fullData.size} bytes ($total fragments)")
+
+            // Feed into multiplexer via JNI
+            scope.launch {
+                try {
+                    AtmosphereNative.wifiAwareDataReceived(
+                        atmosphereHandle, peerId, fullData
+                    )
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Failed to feed Wi-Fi Aware data to Rust", e)
+                }
+            }
         }
     }
-    
+
+    // ========================================================================
+    // Fragmentation + sending (outgoing)
+    // ========================================================================
+
     /**
-     * Create network connection using Wi-Fi Aware Network Specifier.
+     * Fragment data and send via Wi-Fi Aware sendMessage.
+     * Each fragment: [seq:4][idx:2][total:2][payload:≤247]
      */
-    private suspend fun createNetworkConnection(
-        session: DiscoverySession,
-        peerHandle: PeerHandle,
-        port: Int
-    ): WifiAwareConnection = suspendCoroutine { continuation ->
-        
-        val networkSpecifier = WifiAwareNetworkSpecifier.Builder(session, peerHandle)
-            .setPskPassphrase("atmosphere-mesh-2024")
-            .setPort(port)
-            .build()
-        
-        val networkRequest = NetworkRequest.Builder()
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI_AWARE)
-            .setNetworkSpecifier(networkSpecifier)
-            .build()
-        
-        val networkCallback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: android.net.Network) {
-                Log.i(TAG, "Wi-Fi Aware network available: $network")
-                
-                val connection = WifiAwareConnection(
-                    network = network,
-                    peerHandle = peerHandle,
-                    port = port
-                )
-                
-                activeConnections[peerHandle.toString()] = connection
-                
-                continuation.resume(connection)
-            }
-            
-            override fun onUnavailable() {
-                Log.e(TAG, "Wi-Fi Aware network unavailable")
-                continuation.resumeWithException(
-                    RuntimeException("Network unavailable")
-                )
-            }
-            
-            override fun onLost(network: android.net.Network) {
-                Log.w(TAG, "Wi-Fi Aware network lost: $network")
-                activeConnections.remove(peerHandle.toString())
-            }
+    private fun sendFragmented(peerHandle: PeerHandle, data: ByteArray) {
+        val seq = nextSeq++
+        val totalFragments = (data.size + MAX_FRAG_PAYLOAD - 1) / MAX_FRAG_PAYLOAD
+
+        for (i in 0 until totalFragments) {
+            val offset = i * MAX_FRAG_PAYLOAD
+            val end = minOf(offset + MAX_FRAG_PAYLOAD, data.size)
+            val payload = data.copyOfRange(offset, end)
+
+            val fragment = ByteBuffer.allocate(FRAG_HEADER_SIZE + payload.size)
+                .order(ByteOrder.BIG_ENDIAN)
+                .putInt(seq)
+                .putShort(i.toShort())
+                .putShort(totalFragments.toShort())
+                .put(payload)
+                .array()
+
+            sendRawMessage(peerHandle, fragment)
         }
-        
-        connectivityManager.requestNetwork(networkRequest, networkCallback)
+
+        Log.d(TAG, "📤 Sent ${data.size} bytes to $peerHandle in $totalFragments fragments (seq=$seq)")
     }
-    
-    /**
-     * Send data to a peer via discovered session.
-     */
-    fun sendMessage(peerHandle: PeerHandle, data: ByteArray) {
+
+    private fun sendRawMessage(peerHandle: PeerHandle, data: ByteArray) {
         val session = publishDiscoverySession ?: subscribeDiscoverySession
         if (session == null) {
             Log.e(TAG, "No active session to send message")
             return
         }
-        
         session.sendMessage(peerHandle, 0, data)
-        Log.d(TAG, "Sent ${data.size} bytes to peer $peerHandle")
     }
-    
-    /**
-     * Stop Wi-Fi Aware session and cleanup.
-     */
+
+    // ========================================================================
+    // Outgoing poll loop — polls multiplexer via JNI
+    // ========================================================================
+
+    private val outgoingPollJobs = mutableMapOf<String, Job>()
+
+    private fun startOutgoingPollLoop(peerId: String, peerHandle: PeerHandle) {
+        // Don't start duplicate poll loops
+        if (outgoingPollJobs.containsKey(peerId)) return
+
+        val job = scope.launch {
+            Log.i(TAG, "Starting outgoing poll loop for $peerId")
+            while (isActive) {
+                try {
+                    val data = AtmosphereNative.wifiAwarePollOutgoing(atmosphereHandle, peerId)
+                    if (data != null) {
+                        sendFragmented(peerHandle, data)
+                    } else {
+                        delay(50) // No data — back off
+                    }
+                } catch (e: Throwable) {
+                    Log.e(TAG, "Error polling outgoing for $peerId", e)
+                    delay(1000)
+                }
+            }
+        }
+        outgoingPollJobs[peerId] = job
+    }
+
+    // ========================================================================
+    // Lifecycle
+    // ========================================================================
+
     fun stop() {
+        outgoingPollJobs.values.forEach { it.cancel() }
+        outgoingPollJobs.clear()
+
         publishDiscoverySession?.close()
         subscribeDiscoverySession?.close()
         wifiAwareSession?.close()
-        
+
         publishDiscoverySession = null
         subscribeDiscoverySession = null
         wifiAwareSession = null
-        
-        activeConnections.clear()
+
+        acceptedPeers.clear()
+        peerHandleByAtmoId.clear()
+        reassemblyBuffers.clear()
+        reassemblyTotals.clear()
         discoveredPeers.clear()
-        
+
         _isSessionActive.value = false
-        
         scope.cancel()
-        
+
         Log.i(TAG, "Wi-Fi Aware session stopped")
     }
-    
-    /**
-     * Get list of discovered peers.
-     */
-    fun getDiscoveredPeers(): List<PeerDiscoveryInfo> {
-        return discoveredPeers.values.toList()
-    }
+
+    fun getDiscoveredPeers(): List<PeerDiscoveryInfo> = discoveredPeers.values.toList()
 }
 
-/**
- * Information about a discovered Wi-Fi Aware peer.
- */
 data class PeerDiscoveryInfo(
     val peerHandle: PeerHandle,
     val serviceInfo: ByteArray,
@@ -414,76 +449,15 @@ data class PeerDiscoveryInfo(
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is PeerDiscoveryInfo) return false
-        
-        if (peerHandle != other.peerHandle) return false
-        if (!serviceInfo.contentEquals(other.serviceInfo)) return false
-        if (discoveredAt != other.discoveredAt) return false
-        
-        return true
+        return peerHandle == other.peerHandle &&
+                serviceInfo.contentEquals(other.serviceInfo) &&
+                discoveredAt == other.discoveredAt
     }
-    
+
     override fun hashCode(): Int {
         var result = peerHandle.hashCode()
         result = 31 * result + serviceInfo.contentHashCode()
         result = 31 * result + discoveredAt.hashCode()
         return result
-    }
-}
-
-/**
- * Wi-Fi Aware network connection wrapper.
- */
-class WifiAwareConnection(
-    val network: android.net.Network,
-    val peerHandle: PeerHandle,
-    val port: Int
-) {
-    private var socket: Socket? = null
-    private var inputStream: InputStream? = null
-    private var outputStream: OutputStream? = null
-    
-    /**
-     * Open TCP socket over Wi-Fi Aware network.
-     */
-    suspend fun connect(remoteAddress: String, remotePort: Int): Boolean {
-        return withContext(Dispatchers.IO) {
-            try {
-                socket = network.socketFactory.createSocket(remoteAddress, remotePort)
-                inputStream = socket?.getInputStream()
-                outputStream = socket?.getOutputStream()
-                true
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to open socket", e)
-                false
-            }
-        }
-    }
-    
-    /**
-     * Send data over the connection.
-     */
-    suspend fun send(data: ByteArray) {
-        withContext(Dispatchers.IO) {
-            outputStream?.write(data)
-            outputStream?.flush()
-        }
-    }
-    
-    /**
-     * Receive data from the connection.
-     */
-    suspend fun receive(buffer: ByteArray): Int {
-        return withContext(Dispatchers.IO) {
-            inputStream?.read(buffer) ?: -1
-        }
-    }
-    
-    /**
-     * Close the connection.
-     */
-    fun close() {
-        inputStream?.close()
-        outputStream?.close()
-        socket?.close()
     }
 }

@@ -162,14 +162,15 @@ object AtmosphereNative {
     external fun wifiAwareDataReceived(handle: Long, peerId: String, data: ByteArray)
 
     /**
-     * Send data to a Wi-Fi Aware peer.
-     * 
-     * @param handle Handle returned from init()
-     * @param peerId Peer handle/ID as string
-     * @param data Data bytes to send
-     * @return true if send was queued successfully
+     * Poll outgoing Wi-Fi Aware data for a peer.
+     * Returns null if no data is pending.
      */
-    external fun wifiAwareSendData(handle: Long, peerId: String, data: ByteArray): Boolean
+    external fun wifiAwarePollOutgoing(handle: Long, peerId: String): ByteArray?
+
+    /**
+     * Notify Rust that a Wi-Fi Aware peer completed hello handshake (accepted into multiplexer).
+     */
+    external fun wifiAwarePeerAccepted(handle: Long, peerId: String, peerHandle: String)
 
     // ========================================================================
     // BLE Transport

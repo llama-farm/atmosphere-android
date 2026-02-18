@@ -1151,6 +1151,7 @@ class AtmosphereService : Service() {
                         context = applicationContext,
                         atmosphereHandle = atmosphereHandle
                     )
+                    wifi.setLocalPeerId(nodeId.take(16))
                     if (wifi.isAvailable.value) {
                         serviceScope.launch {
                             try {
