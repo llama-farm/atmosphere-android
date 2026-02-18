@@ -161,7 +161,7 @@ class BleTransportManager(
             // Create TX characteristic (central writes to us)
             val txChar = BluetoothGattCharacteristic(
                 TX_CHAR_UUID,
-                BluetoothGattCharacteristic.PROPERTY_WRITE,
+                BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE,
                 BluetoothGattCharacteristic.PERMISSION_WRITE
             )
             
@@ -253,6 +253,30 @@ class BleTransportManager(
             if (characteristic.uuid == TX_CHAR_UUID && value != null) {
                 Log.d(TAG, "Received ${value.size} bytes from ${device.address}")
                 
+                // Intercept hello messages before fragment parsing
+                if (value.size < 200 && value[0] == '{'.code.toByte()) {
+                    try {
+                        val text = String(value, Charsets.UTF_8)
+                        if (text.contains("\"type\":\"hello\"")) {
+                            val json = org.json.JSONObject(text)
+                            val remotePeerId = json.optString("peer_id", "")
+                            Log.i(TAG, "Received BLE hello from ${device.address}: peer_id=$remotePeerId")
+                            if (remotePeerId.isNotEmpty()) {
+                                deviceToAtmoPeerId[device.address] = remotePeerId
+                                try {
+                                    AtmosphereNative.blePeerAccepted(atmosphereHandle, remotePeerId, device.address)
+                                } catch (e: Throwable) {
+                                    Log.w(TAG, "blePeerAccepted JNI: ${e.message}")
+                                }
+                            }
+                            if (responseNeeded) {
+                                gattServer?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, offset, null)
+                            }
+                            return
+                        }
+                    } catch (_: Exception) { /* Not JSON, fall through to fragment handling */ }
+                }
+                
                 // Handle fragment
                 handleIncomingFragment(device.address, value)
                 
@@ -295,6 +319,13 @@ class BleTransportManager(
             if (bleAdvertiser == null) {
                 Log.e(TAG, "BLE advertiser not available")
                 return
+            }
+            
+            // Set adapter name to "Atmosphere" so scan response identifies us
+            try {
+                bluetoothAdapter?.name = "Atmosphere"
+            } catch (e: SecurityException) {
+                Log.w(TAG, "Could not set BLE adapter name: ${e.message}")
             }
             
             val settings = AdvertiseSettings.Builder()
@@ -348,12 +379,18 @@ class BleTransportManager(
                 .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
                 .build()
             
-            // Scan without filters — CoreBluetooth on macOS doesn't reliably include
-            // service UUID or device name in advertisement data. We validate the service
-            // after connecting (in onServicesDiscovered).
-            bleScanner?.startScan(null, settings, scanCallback)
+            // Use service UUID filter for Android↔Android discovery (both sides advertise it).
+            // Filtered scans are less affected by Android's scan throttling.
+            // Mac CoreBluetooth may not include UUID in advertisements, but we handle
+            // Mac connections via the GATT server callback (Mac connects to us as central).
+            val filters = listOf(
+                android.bluetooth.le.ScanFilter.Builder()
+                    .setServiceUuid(ParcelUuid(SERVICE_UUID))
+                    .build()
+            )
+            bleScanner?.startScan(filters, settings, scanCallback)
             
-            Log.i(TAG, "BLE scan started (no filter — validate service after connect)")
+            Log.i(TAG, "BLE scan started (filtered by service UUID)")
             
             Log.i(TAG, "BLE scanning started")
         } catch (e: SecurityException) {
@@ -373,11 +410,15 @@ class BleTransportManager(
                 return
             }
             
+            // Log ALL scan results at debug level for diagnostics
+            val scanUuids = result.scanRecord?.serviceUuids?.map { it.uuid.toString().takeLast(8) } ?: emptyList()
+            val scanName = result.scanRecord?.deviceName ?: (try { device.name } catch (_: SecurityException) { null })
+            Log.d(TAG, "BLE scan result: $address name=$scanName uuids=$scanUuids rssi=${result.rssi}")
+            
             // Without service UUID filter, validate the scan result:
-            // Accept if service UUID matches OR device name is "Atmosphere"
+            // Accept if service UUID matches OR device name contains "Atmosphere"
             val hasServiceUuid = result.scanRecord?.serviceUuids?.any { it.uuid == SERVICE_UUID } == true
-            val hasName = result.scanRecord?.deviceName == "Atmosphere" ||
-                          (try { device.name } catch (_: SecurityException) { null }) == "Atmosphere"
+            val hasName = scanName?.contains("Atmosphere", ignoreCase = true) == true
             if (!hasServiceUuid && !hasName) {
                 return // Not an Atmosphere peer
             }
@@ -429,6 +470,13 @@ class BleTransportManager(
     private fun handleIncomingFragment(peerId: String, fragment: ByteArray) {
         if (fragment.size < 6) {
             Log.w(TAG, "Fragment too short: ${fragment.size} bytes")
+            return
+        }
+        
+        // Skip BLE hello messages (raw JSON, not fragmented)
+        if (fragment[0] == '{'.code.toByte()) {
+            val msg = String(fragment, Charsets.UTF_8)
+            Log.d(TAG, "Received BLE hello from $peerId: $msg")
             return
         }
         
@@ -506,8 +554,10 @@ class BleTransportManager(
     /**
      * Fragment message matching Rust protocol.
      */
-    private fun fragmentMessage(data: ByteArray): List<ByteArray> {
-        val payloadPerChunk = MAX_BLE_CHUNK_SIZE - 6 // 6 bytes for header
+    private fun fragmentMessage(data: ByteArray, mtu: Int = 23): List<ByteArray> {
+        // Use MTU-based chunk size: ATT header is 3 bytes, fragment header is 6 bytes
+        val chunkSize = minOf(MAX_BLE_CHUNK_SIZE, maxOf(mtu - 3, 20)) // Effective write size = MTU - 3
+        val payloadPerChunk = chunkSize - 6 // 6 bytes for fragment header
         val totalFragments = ((data.size + payloadPerChunk - 1) / payloadPerChunk).toUShort()
         val sequence = sendSequence++
         
@@ -556,11 +606,12 @@ class BleTransportManager(
                     try {
                         val data = AtmosphereNative.blePollOutgoing(atmosphereHandle, atmoPeerId)
                         if (data != null && data.isNotEmpty()) {
-                            Log.i(TAG, "📤 Outgoing BLE data for $atmoPeerId ($deviceId): ${data.size} bytes")
-                            val fragments = fragmentMessage(data)
+                            val mtu = conn.negotiatedMtu
+                            Log.i(TAG, "📤 Outgoing BLE data for $atmoPeerId ($deviceId): ${data.size} bytes (mtu=$mtu)")
+                            val fragments = fragmentMessage(data, mtu)
                             for (fragment in fragments) {
                                 conn.sendData(fragment)
-                                delay(10)
+                                delay(5) // Small delay between fragments
                             }
                         }
                     } catch (e: Throwable) {
@@ -569,17 +620,28 @@ class BleTransportManager(
                 }
                 
                 // Poll outgoing for connected centrals (GATT server → notify)
+                // Skip centrals that we also have an outbound GATT client connection to
+                // (avoid double-polling the same peer's outgoing queue)
+                val outboundAddresses = outboundConnections.keys.toSet()
                 for ((device, _) in connectedCentrals) {
                     val deviceId = device.address
+                    if (outboundAddresses.contains(deviceId)) {
+                        continue // Already handled by GATT client path above
+                    }
                     val atmoPeerId = deviceToAtmoPeerId[deviceId] ?: deviceId
+                    // Also skip if this atmo peer is already covered via a different address in outbound
+                    val outboundAtmoIds = outboundConnections.keys.map { deviceToAtmoPeerId[it] ?: it }.toSet()
+                    if (outboundAtmoIds.contains(atmoPeerId)) {
+                        continue
+                    }
                     try {
                         val data = AtmosphereNative.blePollOutgoing(atmosphereHandle, atmoPeerId)
                         if (data != null && data.isNotEmpty()) {
                             Log.i(TAG, "📤 Outgoing BLE data (server notify) for $atmoPeerId ($deviceId): ${data.size} bytes")
-                            val fragments = fragmentMessage(data)
+                            val fragments = fragmentMessage(data) // Use default MTU for server notify
                             for (fragment in fragments) {
                                 sendToConnectedCentral(device, fragment)
-                                delay(10)
+                                delay(5)
                             }
                         }
                     } catch (e: Throwable) {
@@ -624,6 +686,10 @@ class BleTransportManager(
         private var txCharacteristic: BluetoothGattCharacteristic? = null
         private var rxCharacteristic: BluetoothGattCharacteristic? = null
         
+        // Write completion gate — only one outstanding GATT write at a time
+        private var writeCompletion: kotlinx.coroutines.CompletableDeferred<Boolean>? = null
+        var negotiatedMtu: Int = 23  // default BLE MTU
+        
         val gattCallback = object : BluetoothGattCallback() {
             override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
                 when (newState) {
@@ -631,9 +697,10 @@ class BleTransportManager(
                         Log.i(TAG, "Connected to GATT server: $peerId")
                         this@GattServerConnection.gatt = gatt
                         try {
-                            gatt.discoverServices()
+                            // Request larger MTU for faster data transfer (default is 23 → 20 usable)
+                            gatt.requestMtu(512)
                         } catch (e: SecurityException) {
-                            Log.e(TAG, "Failed to discover services: missing permissions", e)
+                            Log.e(TAG, "Failed to request MTU: missing permissions", e)
                         }
                     }
                     BluetoothProfile.STATE_DISCONNECTED -> {
@@ -734,6 +801,20 @@ class BleTransportManager(
                 }
             }
             
+            override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+                Log.i(TAG, "MTU changed to $mtu for $peerId (status=$status)")
+                negotiatedMtu = mtu
+                try {
+                    gatt.discoverServices()
+                } catch (e: SecurityException) {
+                    Log.e(TAG, "Failed to discover services: missing permissions", e)
+                }
+            }
+            
+            override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+                writeCompletion?.complete(status == BluetoothGatt.GATT_SUCCESS)
+            }
+            
             override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
                 if (characteristic.uuid == RX_CHAR_UUID) {
                     val data = characteristic.value
@@ -744,14 +825,26 @@ class BleTransportManager(
         }
         
         suspend fun sendData(data: ByteArray) {
-            withContext(Dispatchers.IO) {
-                txCharacteristic?.let { tx ->
-                    tx.value = data
-                    try {
-                        gatt?.writeCharacteristic(tx)
-                    } catch (e: SecurityException) {
-                        Log.e(TAG, "Failed to write characteristic: missing permissions", e)
+            txCharacteristic?.let { tx ->
+                tx.value = data
+                tx.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                try {
+                    writeCompletion = kotlinx.coroutines.CompletableDeferred()
+                    val result = gatt?.writeCharacteristic(tx) ?: false
+                    if (!result) {
+                        Log.w(TAG, "writeCharacteristic returned false for $peerId (${data.size} bytes)")
                     }
+                    if (result) {
+                        // Wait for onCharacteristicWrite callback (max 2s)
+                        val success = kotlinx.coroutines.withTimeoutOrNull(2000) {
+                            writeCompletion?.await()
+                        }
+                        if (success == null) {
+                            Log.w(TAG, "writeCharacteristic timed out for $peerId (${data.size} bytes)")
+                        }
+                    }
+                } catch (e: SecurityException) {
+                    Log.e(TAG, "Failed to write characteristic: missing permissions", e)
                 }
             }
         }
