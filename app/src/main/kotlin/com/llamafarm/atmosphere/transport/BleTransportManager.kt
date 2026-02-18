@@ -223,6 +223,16 @@ class BleTransportManager(
                     } catch (e: Throwable) {
                         Log.w(TAG, "blePeerAccepted JNI not available for central: ${e.message}")
                     }
+                    
+                    // Reverse connect: also connect to this central's GATT server
+                    // so we can RECEIVE data from it (notifications require client subscription)
+                    if (!outboundConnections.containsKey(device.address)) {
+                        scope.launch {
+                            delay(1000) // Give the central time to settle
+                            Log.i(TAG, "Reverse-connecting to central ${device.address} as GATT client")
+                            connectToPeer(device)
+                        }
+                    }
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     Log.i(TAG, "Central disconnected: ${device.address}")
