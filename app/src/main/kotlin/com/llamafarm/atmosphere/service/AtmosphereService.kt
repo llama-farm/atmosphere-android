@@ -269,6 +269,9 @@ class AtmosphereService : Service() {
     private var bleTransport: BleTransportManager? = null
     private var wifiAwareTransport: AtmoWifiAwareManager? = null
     
+    // Multicast lock — required for UDP broadcast discovery on Android
+    private var multicastLock: android.net.wifi.WifiManager.MulticastLock? = null
+    
     // Transport bridge: dedup cache for cross-transport forwarding
     private val seenNonces = java.util.LinkedHashMap<String, Long>(100, 0.75f, true)
     private val SEEN_NONCES_MAX = 500
@@ -363,6 +366,8 @@ class AtmosphereService : Service() {
         super.onDestroy()
         meshRequestProcessor?.stop()
         meshRequestProcessor = null
+        multicastLock?.release()
+        multicastLock = null
         stopNode()
         serviceScope.cancel()
         Log.d(TAG, "Service destroyed")
@@ -1128,6 +1133,18 @@ class AtmosphereService : Service() {
                 throw RuntimeException("Failed to initialize Atmosphere core")
             }
             
+            // Acquire multicast lock for UDP broadcast discovery
+            try {
+                val wifiManager = applicationContext.getSystemService(android.content.Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
+                multicastLock = wifiManager?.createMulticastLock("atmosphere_lan_discovery")?.apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+                Log.i(TAG, "📡 Multicast lock acquired for LAN UDP discovery")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to acquire multicast lock: ${e.message}")
+            }
+
             // Start mesh networking
             val meshPort = AtmosphereNative.startMesh(atmosphereHandle)
             Log.i(TAG, "🔮 Rust core mesh started: peerId=${nodeId.take(16)}, port=$meshPort")
