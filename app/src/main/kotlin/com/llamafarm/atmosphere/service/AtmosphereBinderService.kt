@@ -897,15 +897,14 @@ class AtmosphereBinderService : Service() {
                 val app = applicationContext as? AtmosphereApplication
                 val crdtCore = getCrdtCore()
                 
-                // Semantic router finds which peer has this tool capability
-                val router = app?.semanticRouter
-                val routeResult = if (router != null) {
-                    runBlocking { router.route("$appName.$toolName") }
-                } else null
+                // For app tool calls, find the peer that hosts this app by looking for
+                // app_tool capabilities in the gossip table (exact match, not semantic)
+                val capId = "app_tool:$appName:$toolName"
+                val gossipManager = com.llamafarm.atmosphere.core.GossipManager.getInstance(applicationContext)
+                val targetNodeId = gossipManager.findCapabilityPeer(capId)
+                    ?: gossipManager.findAppPeer(appName)  // fallback: any peer hosting this app
                 
-                val targetNodeId = routeResult?.capability?.nodeId
-                
-                Log.d(TAG, "Router decision for tool $appName.$toolName: target=$targetNodeId")
+                Log.d(TAG, "App tool routing for $capId: target=$targetNodeId")
                 
                 if (crdtCore == null) {
                     return errorJson("CRDT mesh not available")
@@ -925,24 +924,38 @@ class AtmosphereBinderService : Service() {
                     "source" to "android"
                 ))
                 
-                // Wait for response via CRDT _tool_responses (30s timeout)
-                val latch = java.util.concurrent.CountDownLatch(1)
+                // Poll for response in _tool_responses (30s timeout, 200ms interval)
+                val deadline = System.currentTimeMillis() + 30_000
                 var responseJson: String? = null
                 
-                val observerId = crdtCore.observe("_tool_responses") { event ->
-                    val doc = crdtCore.get("_tool_responses", event.docId)
-                    if (doc?.get("request_id") == requestId) {
-                        responseJson = doc["result"]?.toString()
-                        latch.countDown()
+                while (System.currentTimeMillis() < deadline) {
+                    Thread.sleep(200)
+                    val doc = crdtCore.get("_tool_responses", requestId)
+                    if (doc != null) {
+                        val status = doc["status"]?.toString() ?: ""
+                        if (status == "completed") {
+                            // The Mac daemon writes the result in "body"
+                            val body = doc["body"]
+                            responseJson = when (body) {
+                                is Map<*, *> -> org.json.JSONObject(body as Map<*, *>).toString()
+                                is String -> body
+                                else -> body?.toString() ?: "{}"
+                            }
+                            Log.i(TAG, "✅ Tool response received for $appName/$toolName in ${System.currentTimeMillis() - (deadline - 30_000)}ms")
+                            break
+                        } else if (status == "error") {
+                            val error = doc["error"]?.toString() ?: "Unknown error"
+                            Log.e(TAG, "❌ Tool error for $appName/$toolName: $error")
+                            responseJson = errorJson(error)
+                            break
+                        }
                     }
                 }
                 
-                val answered = latch.await(30, java.util.concurrent.TimeUnit.SECONDS)
-                crdtCore.removeObserver(observerId)
-                
-                if (answered && !responseJson.isNullOrEmpty()) {
+                if (!responseJson.isNullOrEmpty()) {
                     responseJson!!
                 } else {
+                    Log.w(TAG, "⏰ Tool timeout for $appName/$toolName (30s)")
                     errorJson("No response for $appName.$toolName from mesh (30s timeout)")
                 }
             } catch (e: Exception) {

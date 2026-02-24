@@ -310,6 +310,23 @@ class GossipManager private constructor(
     }
     
     /**
+     * Find the peer that hosts a specific capability (by exact ID match).
+     * Used for app tool routing — bypasses semantic matching.
+     */
+    fun findCapabilityPeer(capabilityId: String): String? {
+        return gradientTable[capabilityId]?.nodeId
+    }
+    
+    /**
+     * Find any peer that hosts tools for a given app name.
+     * Searches for any "app_tool:{appName}:*" capability.
+     */
+    fun findAppPeer(appName: String): String? {
+        val prefix = "app_tool:$appName:"
+        return gradientTable.values.firstOrNull { it.capabilityId.startsWith(prefix) }?.nodeId
+    }
+    
+    /**
      * Clean up expired capabilities.
      */
     fun cleanupExpired() {
