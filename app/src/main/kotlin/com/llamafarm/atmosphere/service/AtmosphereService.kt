@@ -915,8 +915,56 @@ class AtmosphereService : Service() {
         }
     }
     
-    // Relay message handling removed — CRDT mesh handles all message routing
-    // Responses are watched via CRDT _responses collection polling
+    // Poll CRDT _responses for chat/inference responses from mesh peers
+    private fun startResponsePoller() {
+        serviceScope.launch {
+            val seen = mutableSetOf<String>()
+            while (true) {
+                delay(500)
+                if (atmosphereHandle == 0L || pendingRequests.isEmpty()) continue
+                
+                try {
+                    val respJson = AtmosphereNative.query(atmosphereHandle, "_responses")
+                    val respArray = JSONArray(respJson)
+                    
+                    for (i in 0 until respArray.length()) {
+                        val doc = respArray.getJSONObject(i)
+                        val requestId = doc.optString("request_id", doc.optString("_id", ""))
+                        if (requestId.isEmpty() || seen.contains(requestId)) continue
+                        
+                        val callback = pendingRequests.remove(requestId) ?: continue
+                        seen.add(requestId)
+                        
+                        val status = doc.optString("status", "")
+                        if (status == "completed" || status == "complete") {
+                            // Extract response content — Mac writes full chat completion in "response"
+                            val response = doc.opt("response")
+                            val content = when {
+                                response is JSONObject -> {
+                                    // OpenAI format: choices[0].message.content
+                                    response.optJSONArray("choices")
+                                        ?.optJSONObject(0)
+                                        ?.optJSONObject("message")
+                                        ?.optString("content")
+                                        ?: response.optString("content", response.toString())
+                                }
+                                response is String -> response
+                                else -> doc.optString("content", response?.toString() ?: "")
+                            }
+                            Log.i(TAG, "✅ CRDT response received for $requestId: ${content.take(80)}...")
+                            callback(content, null)
+                        } else if (status == "error") {
+                            val error = doc.optString("error", "Unknown mesh error")
+                            Log.w(TAG, "❌ CRDT error response for $requestId: $error")
+                            callback(null, error)
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Quiet — polling errors are expected when mesh is syncing
+                }
+            }
+        }
+    }
     
     /**
      * Send inference response back via CRDT mesh.
@@ -1157,6 +1205,10 @@ class AtmosphereService : Service() {
                 it.start()
             }
             Log.i(TAG, "🔮 Mesh request processor started")
+
+            // Start polling CRDT _responses for chat/inference results from mesh
+            startResponsePoller()
+            Log.i(TAG, "🔮 Response poller started")
 
             // Start BLE transport (GATT server + scanner)
             try {
