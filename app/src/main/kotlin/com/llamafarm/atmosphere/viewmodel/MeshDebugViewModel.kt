@@ -449,46 +449,47 @@ class MeshDebugViewModel(application: Application) : AndroidViewModel(applicatio
         addLog("info", "routing", "Test route: $query")
         viewModelScope.launch {
             _isRoutingLoading.value = true
+            val startMs = System.currentTimeMillis()
             try {
-                val handle = getHandle()
-                if (handle != null && handle != 0L) {
-                    val requestId = "test-${System.currentTimeMillis()}"
-                    val requestDoc = JSONObject().apply {
-                        put("query", query)
-                        put("status", "pending")
-                        put("timestamp", System.currentTimeMillis())
+                // ── Step 1: INSTANT local routing decision via ONNX/hash ──
+                val router = com.llamafarm.atmosphere.router.SemanticRouter.getInstance(getApplication())
+                val decision = router.route(query)
+                val routeMs = System.currentTimeMillis() - startMs
+                
+                if (decision != null) {
+                    val cap = decision.capability
+                    val sb = decision.scoreBreakdown
+                    val breakdown = mutableMapOf(
+                        "semantic" to sb.semanticScore,
+                        "latency" to sb.latencyScore,
+                        "capability" to sb.capabilityScore,
+                        "hop" to sb.hopScore,
+                        "cost" to sb.costScore,
+                        "composite" to sb.compositeScore
+                    )
+                    
+                    val raw = decision.toJson().apply {
+                        put("route_ms", routeMs)
+                        put("local", cap.hops == 0)
                     }
-                    AtmosphereNative.insert(handle, "_requests", requestId, requestDoc.toString())
-                    addLog("info", "routing", "Request $requestId inserted into CRDT mesh")
-
-                    // Poll for response
-                    var attempts = 0
-                    while (attempts < 15) {
-                        delay(1000)
-                        try {
-                            val respJson = AtmosphereNative.get(handle, "_responses", requestId)
-                            if (respJson.isNotEmpty() && respJson != "null" && respJson != "{}") {
-                                val resp = JSONObject(respJson)
-                                val result = RoutingResult(
-                                    target = resp.optString("peer_id", ""),
-                                    score = resp.optDouble("score", 0.0).toFloat(),
-                                    breakdown = emptyMap(),
-                                    raw = resp
-                                )
-                                _routingHistory.value = listOf(
-                                    RoutingTestResult(query = query, result = result)
-                                ) + _routingHistory.value.take(49)
-                                addLog("info", "routing", "Response from ${result.target}")
-                                _isRoutingLoading.value = false
-                                return@launch
-                            }
-                        } catch (_: Exception) {}
-                        attempts++
-                    }
+                    
+                    val localTag = if (cap.hops == 0) "📱 LOCAL" else "🌐 REMOTE (${cap.hops} hops)"
+                    val result = RoutingResult(
+                        target = "${cap.label} @ ${cap.nodeName} [$localTag]",
+                        score = sb.compositeScore,
+                        breakdown = breakdown,
+                        raw = raw
+                    )
                     _routingHistory.value = listOf(
-                        RoutingTestResult(query = query, result = null, error = "Timeout (15s)")
+                        RoutingTestResult(query = query, result = result)
                     ) + _routingHistory.value.take(49)
-                    addLog("warn", "routing", "Request timed out")
+                    addLog("info", "routing", "⚡ Route in ${routeMs}ms → ${cap.label} @ ${cap.nodeName} ($localTag, ${decision.matchMethod.name}, score=${String.format("%.0f%%", sb.compositeScore * 100)})")
+                } else {
+                    val caps = com.llamafarm.atmosphere.core.GossipManager.getInstance(getApplication()).getAllCapabilities()
+                    _routingHistory.value = listOf(
+                        RoutingTestResult(query = query, result = null, error = "No matching capability (${routeMs}ms, ${caps.size} caps in table)")
+                    ) + _routingHistory.value.take(49)
+                    addLog("warn", "routing", "No route found in ${routeMs}ms (${caps.size} caps)")
                 }
             } catch (e: Exception) {
                 _routingHistory.value = listOf(
