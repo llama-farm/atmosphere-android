@@ -31,6 +31,7 @@ object HashMatcher {
     )
     
     enum class MatchMethod {
+        EMBEDDING,       // ONNX embedding cosine similarity
         HASH_EXACT,      // Hash match > 0.95
         HASH_SIMILAR,    // Hash match 0.7-0.95
         KEYWORD_EXACT,   // Exact keyword match

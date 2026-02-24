@@ -2,6 +2,7 @@ package com.llamafarm.atmosphere.router
 
 import android.content.Context
 import android.util.Log
+import com.llamafarm.atmosphere.core.AtmosphereNative
 import com.llamafarm.atmosphere.core.CapabilityAnnouncement
 import com.llamafarm.atmosphere.core.GossipManager
 import com.llamafarm.atmosphere.core.ModelTier
@@ -60,13 +61,64 @@ class SemanticRouter private constructor(
     // Legacy capability registry for local capabilities
     private val capabilities = mutableMapOf<String, MutableList<Capability>>()
     private val keywordIndex = mutableMapOf<String, MutableList<Capability>>()
-    // private var embeddingService: EmbeddingService? = null // TODO: Re-implement with new embedding API
+    private var embedderInitialized = false
     private val embeddingCache = mutableMapOf<String, FloatArray>()
     private val maxCacheSize = 1000
     
     /**
      * Extract keywords from text for indexing.
      */
+    /**
+     * Get or compute an embedding for text, with caching.
+     */
+    private fun getOrComputeEmbedding(text: String): FloatArray? {
+        embeddingCache[text]?.let { return it }
+        
+        // Ensure embedder is initialized
+        if (!embedderInitialized) {
+            try {
+                val modelsDir = java.io.File(context.filesDir, "models").absolutePath
+                val modelFile = java.io.File(modelsDir, "model.onnx")
+                if (modelFile.exists()) {
+                    embedderInitialized = com.llamafarm.atmosphere.core.AtmosphereNative.initEmbedder(modelsDir)
+                    Log.i(TAG, "ONNX embedder initialized: $embedderInitialized")
+                } else {
+                    Log.w(TAG, "ONNX model not found at $modelsDir")
+                    return null
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to init embedder: ${e.message}")
+                return null
+            }
+        }
+        
+        val embedding = com.llamafarm.atmosphere.core.AtmosphereNative.nativeEmbed(text) ?: return null
+        
+        // Cache with eviction
+        if (embeddingCache.size >= maxCacheSize) {
+            val firstKey = embeddingCache.keys.first()
+            embeddingCache.remove(firstKey)
+        }
+        embeddingCache[text] = embedding
+        return embedding
+    }
+    
+    /**
+     * Build a text representation of a capability for embedding comparison.
+     */
+    private fun buildCapabilityText(cap: CapabilityAnnouncement): String {
+        return buildString {
+            append(cap.label)
+            if (cap.modelActual.isNotBlank()) append(" ${cap.modelActual}")
+            append(" ${cap.capabilityType.name}")
+            if (cap.description.isNotBlank()) append(" ${cap.description}")
+            // Add keywords from capability ID
+            cap.capabilityId.split(":", "-", "_").forEach { part ->
+                if (part.length > 2) append(" $part")
+            }
+        }
+    }
+    
     private fun extractKeywords(text: String): List<String> {
         return text.lowercase()
             .split(Regex("\\W+"))
@@ -155,8 +207,47 @@ class SemanticRouter private constructor(
             query = query,
             queryHash = queryHash,
             capabilities = eligibleCapabilities,
-            minScore = 0.1f  // Lower threshold - be more permissive
+            minScore = 0.3f  // Require reasonable hash/keyword match
         )
+        
+        // ── ONNX Embedding matching (if hash/keyword didn't find a good match) ──
+        if (matchResult == null || matchResult.score < 0.5f) {
+            try {
+                val queryEmbedding = getOrComputeEmbedding(query)
+                if (queryEmbedding != null) {
+                    val embeddingStart = System.currentTimeMillis()
+                    var bestCap: CapabilityAnnouncement? = null
+                    var bestSim = 0.0f
+                    
+                    for (cap in eligibleCapabilities) {
+                        // Build a text representation of the capability for embedding
+                        val capText = buildCapabilityText(cap)
+                        val capEmbedding = getOrComputeEmbedding(capText)
+                        if (capEmbedding != null) {
+                            val sim = AtmosphereNative.nativeCosineSimilarity(queryEmbedding, capEmbedding)
+                            if (sim > bestSim) {
+                                bestSim = sim
+                                bestCap = cap
+                            }
+                        }
+                    }
+                    
+                    val embeddingMs = System.currentTimeMillis() - embeddingStart
+                    Log.i(TAG, "🧠 ONNX embedding search: ${eligibleCapabilities.size} caps in ${embeddingMs}ms, best=${bestSim}")
+                    
+                    if (bestCap != null && bestSim > 0.25f && (matchResult == null || bestSim > matchResult.score)) {
+                        matchResult = HashMatcher.MatchResult(
+                            capability = bestCap,
+                            score = bestSim,
+                            method = HashMatcher.MatchMethod.EMBEDDING,
+                            explanation = "ONNX embedding similarity (${String.format("%.1f%%", bestSim * 100)}, ${embeddingMs}ms)"
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "ONNX embedding matching failed: ${e.message}")
+            }
+        }
         
         // BEST EFFORT: If no match found but we have capabilities, use the best one anyway!
         // This is especially important when there's only one choice.
